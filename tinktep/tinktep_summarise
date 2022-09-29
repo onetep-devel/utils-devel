@@ -1,0 +1,110 @@
+#!/bin/bash
+################################################################################
+# A part of TINKTEP, an interface between ONETEP and TINKER.                   #
+# Jacek Dziedzic, University of Southampton, May-December 2015.                #
+################################################################################
+
+################################################################################
+# *** tinktep_summarise ***
+# Displays a short summary of the calculation, parsing the ONETEP .out file.
+#
+# v1.07
+# Jacek Dziedzic, May-December 2015.
+################################################################################
+# Revision history:
+# v1.05 2015.12.22 -- Cleanup and documentation. Error codes.
+# v1.06 2016.05.10 -- Handles fixed NGWFs.
+# v1.07 2016.11.10 -- Handles fixed NGWFs with fully-converged DKN.
+################################################################################
+
+myname="tinktep_summarise"
+
+#-------------------------------------------------------------------------------
+# Aborts, printing a message and returning an error code.
+#-------------------------------------------------------------------------------
+function error() {
+  echo -e "!!! $myname: ERROR #$2: $1. Aborting!" >&2
+  exit $2
+}
+#-------------------------------------------------------------------------------
+
+################################################################################
+# Error codes
+################################################################################
+err_no_single_onetep_out=101
+
+# Use the sole .out file in the current directory or the one specified.
+if [ $# -ne 1 ]; then
+  f=*out
+else
+  f=$1
+fi
+
+if [ ! -r $f ]; then
+  error "No ONETEP .out files in the current directory, or more than one, or the one you asked for does not exist" $err_no_single_onetep_out
+fi
+
+errfile=`echo $f | sed "s/\.out/.err/"`
+errmsgfile=`echo $f | sed "s/\.out/.error_message/"`
+
+echo -e "\n *** Summary for `echo $f` ***\n"
+
+summary_line=`cat $f | grep -n "CALCULATION SUMMARY" | tr ":" " " | awk '{print $1}'`
+if [ -z "$summary_line" ]; then
+  echo "This calculation has not finished properly!"
+  if [ -s "$errmsgfile" ]; then
+    echo -e "\nThis is why:\n"
+    cat $errmsgfile
+    echo -e "\n"
+  else
+    echo "... and there is no user-friendly error message."
+    if [ -s "$errfile" ]; then
+      echo -e "\nHere is what might have gone wrong (brace yourself):\n"
+      cat $errfile
+      echo -e "\n"
+    fi
+  fi
+  exit 1
+fi
+
+cg_line=`cat $f | grep -n "\-\- CG" | tr ":" " " | awk '{print $1}'`
+
+if [ -z "$cg_line" ]; then
+  echo "This calculation has not NGWF-converged!"
+  exit 3
+fi
+
+converged_line=`cat $f | grep -n "NGWF optimisation converged" | tr ":" " " | awk '{print $1}' | head -n 1`
+
+# Handle scenario with fixed NGWFs (0 iterations).
+if [ -z "$converged_line" ]; then
+  let "converged_line=summary_line+2"
+fi
+
+cat $f | awk -v l1=$converged_line -v l2=$summary_line '
+  {
+    if(NR>=l1-1 && NR<=l2-1) {
+      print $0;
+    }
+  }
+'
+
+cat $f | awk -v l1=$summary_line -v l2=$cg_line '
+  {
+    if(NR>=l1 && NR<=l2) {
+      print $0;
+      if($0 ~ "CG") {
+        printf("\n *** Final energy at NGWF convergence: %.9f Eh. ***\n\n",$3);
+      }
+    }
+  }'
+
+echo -n " *** HOMO-LUMO gap:                  " 
+gap=`cat $f | grep "HOMO-LUMO gap" | awk '{printf("%.9f",$3)}'`
+if [ -z "$gap" ]; then
+  echo -e "has not been calculated.\n"
+else
+  echo -e "$gap Eh. ***\n"
+fi
+
+

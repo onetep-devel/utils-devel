@@ -1,0 +1,364 @@
+#!/bin/bash
+################################################################################
+# A part of TINKTEP, an interface between ONETEP and TINKER.                   #
+# Jacek Dziedzic, University of Southampton, May 2015-February 2017.           #
+################################################################################
+
+################################################################################
+# *** xyz_split ***
+# Splits a TINKER XYZ file into QM and MM parts.
+#
+# v1.22
+################################################################################
+# Revision history:
+# v1.01 2015.05.?? -- Initial version.
+# v1.02 2015.12.22 -- Cleaned up documentation. Error codes.
+# v1.05 2016.01.12 -- Allows empty MM regions (specify '-1' as the sole atom index).
+# v1.07 2016.01.12 -- Preserves BBox line, if present.
+# v1.09 2016.01.22 -- Uses xyz_bbox_line.
+# v1.10 2016.01.25 -- Bugfix for the above.
+# v1.11 2016.01.25 -- Tweaks to headers of output files.
+# v1.12 2016.03.22 -- Generalisation of the .tag file to optional third line
+#                     (QM atoms, MM atoms, ignored atoms).
+# v1.13 2016.03.22 -- Corner case of "Empty QM, empty MM, all atoms ignored".
+# v1.16 2017.02.07 -- More accurate reporting on numbers of atoms.
+# v1.17 2017.03.16 -- Correctly handles extra whitespace in .tag files with
+#                     empty QM regions.
+# v1.18 2017.04.28 -- Added 'qm_dummy_atoms', parsing of config file.
+# v1.19 2017.05.12 -- 'dummy_atom_symbol'.
+# v1.20 2017.05.12 -- Dummy atoms arranged to be at the bottom.
+# v1.21 2017.10.20 -- Fixed info on number of atoms for corner case of empty
+#                     regions. Logic was correct, only display had to be fixed.
+# v1.22 2017.10.20 -- Fixed missing err_config_file error code.
+################################################################################
+
+myname="xyz_split"
+configfile="tinktep.config"
+dummy_atom_symbol="J"
+
+#-------------------------------------------------------------------------------
+# Aborts, printing a message and returning an error code.
+#-------------------------------------------------------------------------------
+function error() {
+  echo "!!! $myname: ERROR #$2: $1. Aborting!" >&2
+  exit $2
+}
+#-------------------------------------------------------------------------------
+
+################################################################################
+# Error codes
+################################################################################
+err_improper_invocation=101
+err_bad_xyz_extension=102
+err_tag_xyz_extension=103
+err_qm_file_exists=104
+err_mm_file_exists=105
+err_inxyz_file_missing=106
+err_intag_file_missing=107
+err_intag_file_misformatted=108
+err_inxyz_file_misformatted=109
+err_intag_file_inconsistent=110
+err_failed_to_extract_qm_part=111
+err_failed_to_extract_mm_part=112
+err_failed_to_extract_dummy_qm_part=113
+err_bbox=114
+err_config_file=115
+
+#-------------------------------------------------------------------------------
+# Parses the config file
+#-------------------------------------------------------------------------------
+function parse_config() {
+  if [ ! -r $configfile ]; then
+    error "Cannot read $configfile" $err_config_file
+  fi
+
+  opt_qm_dummy_atoms=`cat $configfile | tr "\t" " " | sed -r "s/ +/ /g" | grep -Ec "^qm_dummy_atoms" | awk '{if($1>0) print "1"; else print "0";}'`
+  if [ $opt_qm_dummy_atoms == "1" ]; then
+    echo "    (Dummy QM atoms will be created from MM atoms)"
+  fi
+}
+#-------------------------------------------------------------------------------
+
+################################################################################
+# main()
+################################################################################
+rm -f "error_message"
+
+parse_config
+
+padding=`echo $myname | sed "s/./ /g"`" "
+
+if [ $# -ne 2 ]; then
+  error "Improper invocation. Supply two arguments: the name of the TINKER xyz file and the name of a tag file" $err_improper_invocation
+fi
+
+inxyzfile=$1
+intagfile=$2
+
+# Extract last four characters of input filenames
+inxyzfile_ext=`echo $inxyzfile | sed -r "s/.*(....)$/\1/"`
+intagfile_ext=`echo $intagfile | sed -r "s/.*(....)$/\1/"`
+
+# Ensure they are as expected, for a safe replace later in determining
+# the output filenames.
+if [ "$inxyzfile_ext" != ".xyz" ]; then
+  error "The extension of the TINKER xyz file should be '.xyz'" $err_bad_xyz_extension
+fi
+if [ "$intagfile_ext" != ".tag" ]; then
+  error "The extension of the input tag file should be '.tag'" $err_bad_tag_extension
+fi
+
+# Generate output filenames
+outqmfile=`echo $inxyzfile | sed -r "s/\.xyz$/_qm.xyz/"`
+outmmfile=`echo $inxyzfile | sed -r "s/\.xyz$/_mm.xyz/"`
+
+echo "*** $myname: Input TINKER xyz file:     $inxyzfile."
+echo "    $padding Input tag file:            $intagfile."
+
+# Ensure output files do not exist
+if [ -e $outqmfile ]; then
+  error "$outqmfile already exists, I'm afraid to overwrite it" $err_qm_file_exists
+fi
+if [ -e $outmmfile ]; then
+  error "$outmmfile already exists, I'm afraid to overwrite it" $err_mm_file_exists
+fi
+
+echo "    $padding Output QM TINKER xyz file: $outqmfile."
+echo "    $padding Output MM TINKER xyz file: $outmmfile."
+
+# Ensure input files exist and are readable
+if [ ! -r $inxyzfile ]; then
+  error "$inxyzfile does not exist or is not readable" $err_inxyz_file_missing
+fi
+
+if [ ! -r $intagfile ]; then
+  error "$intagfile does not exist or is not readable" $err_intag_file_missing
+fi
+
+# Ensure the header of the tag file is formatted correctly
+nlines=`cat $intagfile | awk 'END{print NR}'` # works with or without last CRLF, in contrast to wc -l.
+if [ "$nlines" != "2" ] && [ "$nlines" != "3" ]; then
+  error "$intagfile is misformatted. It should contain exactly two or three lines" $err_intag_file_misformatted
+fi
+
+# Figure out natoms in the xyz file, ensure it is sane
+natoms=`head -n 1 $inxyzfile | sed -r "s/([0-9]+)(.*|$)/\1/" | awk '{print $1+0}'`
+if [ $natoms -le 0 ]; then
+  error "$inxyzfile is misformatted -- the number of atoms is missing from the header or is non-positive. Got '$natoms'" $err_inxyz_file_misformatted
+fi
+
+echo "    $padding Number of atoms (QM+MM+ignored): $natoms."
+
+# Ensure the bulk of the tag file is formatted correctly
+tagresult=$(cat $intagfile | awk -v natoms=$natoms '
+{
+  for(i=1; i<=NF; ++i) {
+    idx=$i;
+    if(idx < 1 || idx > natoms) {
+      if(idx != -1) {
+        printf("Atom index %s is out of range or not a valid integer. ",idx);
+        exit;
+      }
+      else {
+        region_empty=1;
+      }
+    }
+    if(present[idx] != 1) {
+      present[idx]=1;
+    }
+    else {
+      if(idx != -1) { # Two -1s are OK -- the corner case of "Empty QM, empty MM, all atoms ignored"
+        printf("Atom index %d occurs more than once. ",idx);
+        exit;
+      }
+    }
+  }
+}
+END {
+  missing_idx=0;
+  for(idx=1; idx<=natoms; ++idx) {
+    if(present[idx] != 1) {
+      missing_idx=idx;
+      break;
+    }
+  }
+  if(missing_idx != 0 && ! region_empty) {
+    printf("Atom index %d not assigned to either the QM or the MM section. ",missing_idx);
+  }
+}
+')
+if [ ! -z "$tagresult" ]; then
+  error "Inconsistent tag file $intagfile: $tagresult""Fix this please" $err_intag_file_inconsistent
+fi
+
+# See if there's a BBox line in the .xyz file -- it will contain no alphanumeric characters, except maybe E, e, D or d (1E+02, 1d0, etc).
+bbox_line=`xyz_bbox_line $inxyzfile` || error "Could not verify the presence of, or parse, the BBox line in the .xyz file $inxyzfile" $err_bbox
+bbox_line_present=`echo $bbox_line | awk '{print ($4 > 0)}'`
+
+echo "    $padding Box dimensions present? "`echo $bbox_line | awk '{print $4}' | sed -e "s/2/Yes (cuboid)./" -e "s/1/Yes (cubic)./" -e "s/0/No./"`
+
+# Extract the QM xyz file
+QM_atoms=`head -n 1 $intagfile`
+MM_atoms=`head -n 2 $intagfile | tail -n 1`
+cat $inxyzfile | awk -v QM_atoms="$QM_atoms" -v MM_atoms="$MM_atoms" -v bbox_line_present=$bbox_line_present \
+                     -v filename="$inxyzfile" -v opt_qm_dummy_atoms=$opt_qm_dummy_atoms '
+BEGIN {
+  n_QM_atoms=split(QM_atoms,QM_atoms_arr," ");
+  if(QM_atoms_arr[1]=="-1") {
+    n_QM_atoms=0;
+  }
+  n_MM_atoms=split(MM_atoms,MM_atoms_arr," ");
+  if(MM_atoms_arr[1]=="-1") {
+    n_MM_atoms=0;
+  }
+}
+{
+  # Header
+  if(NR==1) {
+    if(NF > 1) {
+      origname=substr($0,index($0,$2));
+    }
+    else {
+      origname=filename;
+    }
+    if(opt_qm_dummy_atoms == 0) {
+      printf("%6d %s %s\n",n_QM_atoms,"QM part of",origname);
+    }
+    else {
+      printf("%6d %s %s %s\n",n_QM_atoms+n_MM_atoms,"QM part of",origname,"with dummy atoms");
+    }
+  }
+  # Copy BBox line if present
+  if(NR==2 && bbox_line_present) {
+    print $0;
+  }
+  # Bulk
+  if(NR>1+bbox_line_present) {
+    # Print lines where the atom index is in QM region
+    for(i in QM_atoms_arr) {
+      QM_atom_idx=QM_atoms_arr[i];
+      if($1 == QM_atom_idx) {
+        print $0;
+        # Ensure all connectivity neighbours are also in region
+        for(col=7; col <= NF; ++col) {
+          neigh_idx=$col;
+          neigh_is_also_in_region=0;
+          for(j in QM_atoms_arr) {
+            if(QM_atoms_arr[j] == neigh_idx) {
+              neigh_is_also_in_region=1;
+              break;
+            }
+          }
+          if(neigh_is_also_in_region==0) {
+            printf("Bond cut detected. Connectivity neighbour %d of atom %d is not part of the extracted region",neigh_idx,QM_atom_idx) >"error_message"
+            exit 11;
+          }
+        }
+      }
+    }
+
+  }
+}' >$outqmfile
+result=$?
+if [ $result -ne 0 ]; then
+  errmsg=`cat error_message`
+  error "Failed to extract the QM part of $inxyzfile: $errmsg" $err_failed_to_extract_qm_part
+fi
+
+# If adding dummy QM atoms, also print lines where the atom index is in MM region, change species to a special symbol
+# This is done in a separate awk so that dummy atoms go at the bottom
+if [ "$opt_qm_dummy_atoms" == "1" ]; then
+  cat $inxyzfile | awk -v QM_atoms="$QM_atoms" -v MM_atoms="$MM_atoms" -v bbox_line_present=$bbox_line_present \
+                       -v filename="$inxyzfile" -v dummy_atom_symbol="$dummy_atom_symbol" '
+  BEGIN {
+    n_QM_atoms=split(QM_atoms,QM_atoms_arr," ");
+    n_MM_atoms=split(MM_atoms,MM_atoms_arr," ");
+    if(MM_atoms_arr[1]=="-1") {
+      n_MM_atoms=0;
+    }
+    n_atoms=n_QM_atoms+n_MM_atoms;
+    iatom=n_atoms;
+  }
+  {
+    if(NR>1+bbox_line_present) {
+      for(i in MM_atoms_arr) {
+        MM_atom_idx=MM_atoms_arr[i];
+        if($1 == MM_atom_idx) {
+          pos=match($0,"[ \t]*[0-9]+[ \t]*");
+          skip=RLENGTH+3;
+          line_sans_species=substr($0,skip);
+          iatom++;
+          printf("%6d  %s %s\n",iatom,dummy_atom_symbol,line_sans_species);
+        }
+      }
+    }
+  }' >>$outqmfile
+  result=$?
+  if [ $result -ne 0 ]; then
+    errmsg=`cat error_message`
+    error "Failed to extract the dummy QM atom part of $inxyzfile: $errmsg" $err_failed_to_extract_dummy_qm_part
+  fi
+fi
+
+# Extract the MM xyz file
+cat $inxyzfile | awk -v MM_atoms="$MM_atoms" -v bbox_line_present=$bbox_line_present -v filename="$inxyzfile" '
+BEGIN {
+  n_MM_atoms=split(MM_atoms,MM_atoms_arr," ");
+  if(MM_atoms=="-1") {
+    n_MM_atoms=0;
+  }
+}
+{
+  # Header
+  if(NR==1) {
+    if(NF > 1) {
+      origname=substr($0,index($0,$2));
+    }
+    else {
+      origname=filename;
+    }
+    printf("%6d %s %s\n",n_MM_atoms,"MM part of",filename);
+  }
+  # Copy BBox line if present
+  if(NR==2 && bbox_line_present) {
+    print $0;
+  }
+  # Bulk
+  if(NR>1+bbox_line_present) {
+    # Print lines where the atom index is in MM region
+    for(i in MM_atoms_arr) {
+      MM_atom_idx=MM_atoms_arr[i];
+      if($1 == MM_atom_idx) {
+         print $0;
+         # Ensure all connectivity neighbours are also in region
+         for(col=7; col <= NF; ++col) {
+           neigh_idx=$col;
+           neigh_is_also_in_region=0;
+           for(j in MM_atoms_arr) {
+             if(MM_atoms_arr[j] == neigh_idx) {
+               neigh_is_also_in_region=1;
+               break;
+             }
+           }
+           if(neigh_is_also_in_region==0) {
+             printf("Bond cut detected. Connectivity neighbour %d of atom %d is not part of the extracted region",neigh_idx,MM_atom_idx) >"error_message"
+             exit 11;
+           }
+        }
+      }
+    }
+  }
+}
+' >$outmmfile
+result=$?
+if [ $result -ne 0 ]; then
+  errmsg=`cat error_message`
+  error "Failed to extract the MM part of $inxyzfile: $errmsg" $err_failed_to_extract_mm_part
+fi
+
+n_QM_atoms=`echo $QM_atoms | awk '{if($1 == "-1") print 0; else print NF}'`
+n_MM_atoms=`echo $MM_atoms | awk '{if($1 == "-1") print 0; else print NF}'`
+
+echo "    $padding Number of QM atoms: $n_QM_atoms"
+echo "    $padding Number of MM atoms: $n_MM_atoms"
+echo "    $padding SUCCESS"

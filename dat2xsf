@@ -1,0 +1,30 @@
+#!/bin/bash
+
+# Converts .dat files for ONETEP into .xsf files for direct loading into xcrysden.
+# By Nicholas Hine
+
+# Put this file in your ~/bin directory, and then add the three lines below to 
+# the file ~/.xcrysden/custom-definitions to enable direct loading of .dat
+# files in xcrysden:
+
+#addOption --dat /home/yourusername/bin/dat2xsf {
+#                    load structure from ONETEP .dat file format
+#}
+
+# Also requires check2xsf by Michael Rutter, available from:
+# http://www.tcm.phy.cam.ac.uk/~mjr/vis/
+
+
+awk -v wd=`dirname $1` 'BEGIN {inpos=0};
+     /%endblock positions_abs/ {inpos=0};
+     inpos==0 {print}
+     /%block lattice_cart/ {getline; 
+                            if (($0~/bohr/)||($0~/ang/)) {print} else {print "bohr"; print};}; 
+     /%block positions_abs/ {inpos=1;  getline;
+                             if (($0~/bohr/)||($0~/ang/)) {print; getline} else {print "bohr"};};
+     inpos==1 {sym=$1; gsub(/[0-9]/,"",sym); print sym,$2,$3,$4};
+     /includefile / {incfile=$3; while (getline < (wd "/" incfile)){print}};
+     /includefile:/ {incfile=$2; while (getline < (wd "/" incfile)){print}};' $1 > $1".tmp"
+
+check2xsf $1".tmp"
+rm $1".tmp"

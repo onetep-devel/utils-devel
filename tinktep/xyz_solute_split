@@ -1,0 +1,82 @@
+#!/bin/bash
+################################################################################
+# A part of TINKTEP, an interface between ONETEP and TINKER.                   #
+# Jacek Dziedzic, University of Southampton, May-December 2015.                #
+################################################################################
+
+################################################################################
+# *** xyz_solute_split ***
+#
+# Splits the input .xyz file, assumed to contain a solute in solvent, into
+# a solute part and a solvent part. Minds the BBox line in the input file, 
+# if present, propagating it to the solute and solvent parts. For information 
+# on how an atom is deemed to belong to the solute, see comments in 
+# xyz_count_solute_atoms.
+#
+# v1.01
+# Jacek Dziedzic, May-December 2015.
+################################################################################
+# Revision history:
+# v1.00 2016.01.?? -- Initial version.
+# v1.01 2016.01.25 -- Cleanup, use of xyz_bbox_line, error codes.
+################################################################################
+
+myname="xyz_solute_split"
+
+#-------------------------------------------------------------------------------
+# Aborts, printing a message and returning an error code.
+#-------------------------------------------------------------------------------
+function error() {
+  echo "!!! $myname: ERROR #$2: $1. Aborting!" >&2
+  exit $2
+}
+#-------------------------------------------------------------------------------
+
+################################################################################
+# Error codes
+################################################################################
+err_improper_invocation=101
+err_nsolat=102
+err_ntotat=103
+err_bad_nsolat=104
+err_bad_ntotat=105
+err_in_xyz_split=106
+
+################################################################################
+# main()
+################################################################################
+
+if [ $# -ne 1 ]; then
+  err "Improper invocation. Supply the name of the input .xyz file" $err_improper_invocation
+fi
+
+xyzf=$1
+
+# Find the number of solute atoms. 
+nsolat=`xyz_count_solute_atoms $xyzf` || error "Could not determine the number of solute atoms" $err_nsolat
+ntotat=`head -n 1 $xyzf | awk '{print $1}'` || error "Could not determine the number of atoms" $err_ntotat
+
+if [ -z "$nsolat" ] || [ ! $nsolat -gt 0 ]; then
+  error "Invalid number of solute atoms in $xyzf. Zero is not allowed, BTW" $err_bad_nsolat
+fi
+
+if [ -z "$ntotat" ] || [ ! $ntotat -gt 0 ]; then
+  error "Invalid number of atoms in $xyzf. Zero is not allowed, BTW" $err_bad_ntotat
+fi
+
+root=`echo $xyzf | sed -r "s/\.xyz$//"`
+
+# Effect a solute-sphere split
+rm -f $root"_mm.xyz"
+rm -f $root"_qm.xyz"
+echo "$myname: There are $nsolat solute atoms, $ntotat atoms."
+tagf=$root.tag
+seq 1 $nsolat | tr "\n" " " >$tagf
+echo >>$tagf
+let "first_wat_at=nsolat+1"
+seq $first_wat_at $ntotat | tr "\n" " " >>$tagf
+xyz_split $xyzf $tagf || error "Error in xyz_split" $err_in_xyz_split
+rm -f $tagf
+
+mv $root"_qm.xyz" $root"_solute.xyz"
+mv $root"_mm.xyz" $root"_no_sol.xyz"

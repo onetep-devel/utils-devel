@@ -1,0 +1,136 @@
+#!/bin/bash
+
+###############################################################################
+# Reads an .md trajectory file, copying input to output, except for duplicate #
+# steps (those with identical times), which are removed. Only the first       #
+# instance of any time is retained. This is useful for processing .md files   #
+# combined from multiple runs, where global history has been used, leading to #
+# short time intervals present at the end of one run, and then again at the   #
+# beginning of a restared run.                                                #
+###############################################################################
+# v1.00 2016.07.18. Jacek Dziedzic, jaca@kdm.task.gda.pl.                     #
+# v1.10 2016.07.21. Performs a rudimentary check on the integrity of each     #
+#                   kept frame.                                               #
+###############################################################################
+
+myname="md_clean_duplicates"
+
+#-------------------------------------------------------------------------------
+# Aborts, printing a message and returning an error code.
+#-------------------------------------------------------------------------------
+function error() {
+  echo "!!! $myname: ERROR #$2: $1. Aborting!" >&2
+  exit $2
+}
+
+#-------------------------------------------------------------------------------
+# main()
+#-------------------------------------------------------------------------------
+
+if [ $# -ne 1 ]; then
+  error "Improper invocation: supply one argument -- the name of the .md file to process" 1
+fi
+
+infile=$1
+outfile=$infile".clean"
+
+echo "Processing $infile -> $outfile..."
+
+if [ ! -r $infile ]; then
+  error "$infile does not exist or is unreadable" 2
+fi
+
+rm -rf $outfile
+
+cat $infile | awk -v outfile=$outfile '
+{
+  if(NF == 1) { # New frames are identified by a line with only one column.
+    time=$1;
+    in_frameno++;
+    n_tags["E"]=0;
+    n_tags["T"]=0;
+    n_tags["h"]=0;
+    n_tags["R"]=0;
+    n_tags["V"]=0;
+    n_tags["F"]=0;
+    n_tags["P"]=0;
+    if(knowntimes[time] != 1) {
+      out_frameno++;
+      knowntimes[time]=1;
+      times[out_frameno]=time;
+      printf("Keeping frame %d (time %f) as frame %d.\n",in_frameno,time,out_frameno);
+      keep=1;
+      n_kept++;
+    }
+    else {
+      printf("Frame %d (time %f) is a duplicate. Ignoring this instance.\n",in_frameno,time);
+      keep=0;
+      n_stripped++;
+    }
+  }
+  # If a frame is to be kept, write to output, and do rudimentary check on integrity
+  if(keep) {
+    print $0 >> outfile;
+    if(NF > 0) { # Frame data or time
+      if(NF>1) n_tags[$NF]++; # Frame data proper
+    }
+    else { # Frame separator -- end of frame
+      mangled=0;
+      if(n_tags["E"] != 1) {
+        printf("! Frame %d (time %f), ending at line %d, is mangled -- missing or duplicate <-- E tag.\n",in_frameno,time,NR);
+        mangled=1;
+      }
+      if(n_tags["T"] != 1) {
+        printf("! Frame %d (time %f), ending at line %d, is mangled -- missing or duplicate <-- T tag.\n",in_frameno,time,NR);
+        mangled=1;
+      }
+      if(n_tags["h"] != 3) {
+        printf("! Frame %d (time %f), ending at line %d, is mangled -- number of <-- h tags is not 3.\n",in_frameno,time,NR);
+        mangled=1;
+      }
+      if(n_tags["R"] != n_tags["V"]) {
+        printf("! Frame %d (time %f), ending at line %d, is mangled -- number of <-- R tags is different from number of <-- V tags.\n",in_frameno,time,NR);
+        mangled=1;
+      }
+      if(n_tags["R"] != n_tags["F"]) {
+        printf("! Frame %d (time %f), ending at line %d, is mangled -- number of <-- R tags is different from number of <-- F tags.\n",in_frameno,time,NR);
+        mangled=1;
+      }
+      if(n_tags["P"] != 3) {
+        printf("! Frame %d (time %f), ending at line %d, is mangled -- number of <-- P tags is not 3.\n",in_frameno,time,NR);
+        mangled=1;
+      }
+      if(mangled) n_mangled++;
+    }
+  }
+}
+END {
+  # Generate a summary of frames found
+  printf("\nFirst frame t= %.3f fs\n", times[1]);
+  printf("Last frame  t= %.3f fs\n", times[out_frameno]);
+  printf("%d frames were kept and %d duplicate frames were stripped.\n",n_kept,n_stripped);
+  if(n_mangled == 0) {
+    print "All frames look syntatically fine.";
+  }
+  else {
+    printf("!!! There were %d mangled frames. I cannot fix these, and so they were copied to the output.\n",n_mangled);
+  }
+  if(out_frameno >= 2) {
+    breakage=0;
+    dt=times[2]-times[1];
+    for(frame=2; frame<=out_frameno; ++frame) {
+      t_expected = times[1]+dt*(frame-1)
+      if(times[frame] != t_expected) {
+        printf("Mismatch in time for frame %d. Expected %.3f, got %.3f.\n",frame,t_expected,times[frame]);
+        breakage=1;
+      }
+    }
+    if(breakage == 1) {
+      print "Some frames appear missing or mangled.";
+    }
+    else {
+      print "Times of all frames are as expected.";
+    }
+  }
+}
+'

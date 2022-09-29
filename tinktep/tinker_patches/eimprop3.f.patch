@@ -1,0 +1,5 @@
+--- /home/jd12g09/install/tinker713_original/tinker/source/eimprop3.f	2015-05-08 21:57:53.000000000 +0100
++++ /home/jd12g09/install/tinker70/source/patched/eimprop3.f	2016-01-14 14:14:57.000000000 +0000
+@@ -172 +172 @@
+-   20             format (' Improper',2x,4(i7,'-',a3),f11.4,f12.4)
++   20             format (' Improper',2x,4(i7,'-',a3),f11.4,f17.9)

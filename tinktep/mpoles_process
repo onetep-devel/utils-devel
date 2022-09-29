@@ -1,0 +1,140 @@
+#!/bin/bash
+################################################################################
+# A part of TINKTEP, an interface between ONETEP and TINKER.                   #
+# Jacek Dziedzic, University of Southampton, May 2015-February 2017.           #
+################################################################################
+
+################################################################################
+# *** mpoles_process ***
+# Processes a .mpoles files by applying a translation and adding the energy terms.
+# Also, unit conversion is performed on the coordinates (A->au).
+#
+# v1.30
+################################################################################
+# Revision history:
+# v1.10 2015.07.01 -- Does not use external eterm file, supports separate sets 
+#                     of multipoles. Error codes.
+# v1.20 2015.11.19 -- Improved output precision.
+# v1.25 2016.11.25 -- Further improved output precision.
+# v1.30 2017.09.21 -- Supports vdw Rmin and vdw eps parameters.
+################################################################################
+
+myname="mpoles_process"
+angstrom_to_bohr=1.889726124565061 # now consistent with bohr2ang elsewhere and in TINKER
+
+#-------------------------------------------------------------------------------
+# Aborts, printing a message and returning an error code.
+function error() {
+  echo "!!! $myname: ERROR #$2: $1. Aborting!" >&2
+  exit $2
+}
+#-------------------------------------------------------------------------------
+
+################################################################################
+# Error codes
+################################################################################
+err_improper_invocation=101
+err_mpole_file_unreadable=102
+err_unsupported_operation=103
+err_coord_translation_file_unreadable=104
+err_bad_input_extension=105
+err_output_file_already_exists=106
+err_translating_multipoles=107
+
+################################################################################
+# main()
+################################################################################
+padding=`echo $myname | sed "s/./ /g"`" "
+
+rm -f "error_message"
+
+if [ $# -ne 3 ]; then
+  error "Improper invocation. Try: $myname <mpoles_file> -t <coord_translation_file>" $err_improper_invocation
+fi
+
+# Ensure input file exists
+mpolef=$1
+echo "*** $myname: Input .mpoles file:            $mpolef."
+if [ ! -r $mpolef ]; then
+  error "$mpolef does not exist or is not readable" $err_mpole_file_unreadable
+fi
+
+# Ensure operation exists
+op=$2
+if [ "$op" != "-t" ]; then
+  error "-t is the only supported operation currently" $err_unsupported_operation
+fi
+
+# Ensure coord_translation file exists
+xlatf=$3
+echo "$padding     Input .coord_translation file: $xlatf."
+if [ ! -r $xlatf ]; then
+  error "$xlatf does not exist or is not readable" $err_coord_translation_file_unreadable
+fi
+
+# Extract last seven characters of input filename
+mpolef_ext=`echo $mpolef | sed -r "s/.*(.......)$/\1/"`
+
+# Ensure they are as expected, for a safe replace later in determining
+# the output filename.
+if [ "$mpolef_ext" != ".mpoles" ]; then
+  error "The extension of the input multipoles file should be '.mpoles'" $err_bad_input_extension
+fi
+
+# Infer the names of the output mpoles file and energy term file
+outf=`echo $mpolef | sed -r "s/\.mpoles/.mpoles_for_onetep/"`
+echo "$padding     Output file: $outf."
+
+# Ensure this is fine
+if [ -r $outf ]; then
+  error "$outf (inferred from $mpolef) already exists, I'm afraid to overwrite it" $err_output_file_already_exists
+fi
+
+# Translate the multipoles
+cat $mpolef | awk -v xlatf=$xlatf -v unitconv=$angstrom_to_bohr '
+BEGIN {
+  getline xlat_coord < xlatf;
+  split(xlat_coord,xlat_coord_arr," ");
+}
+{
+  # Leave energy terms alone
+  if($0 ~ ":") {
+    print $0;
+  }
+  # Leave multipole headers alone
+  else if($1 ~ "multipoles") {
+    print $0;
+  } 
+  # Translate and unitconv everything else
+  else {
+    species=$1;
+    x=$2*unitconv + xlat_coord_arr[1];
+    y=$3*unitconv + xlat_coord_arr[2];
+    z=$4*unitconv + xlat_coord_arr[3];
+    charge=$5;
+    total_mx=$6;
+    total_my=$7;
+    total_mz=$8;
+    Qxx=$9;
+    Qxy=$10;
+    Qxz=$11;
+    Qyx=$12;
+    Qyy=$13;
+    Qyz=$14;
+    Qzx=$15;
+    Qzy=$16;
+    Qzz=$17;
+    alpha=$18;
+    vdwRmin=$19;
+    vdweps=$20;
+    #       sp   x       y       z       q          mx      my      mz       Qxx     Qxy     Qxz     Qyx     Qyy     Qyz     Qzx     Qzy     Qzz     alpha  vdwRmin vdweps
+    printf("%-2s %25.13f %25.13f %25.13f  %17.13f  %17.13f %17.13f %17.13f  %17.13f %17.13f %17.13f %17.13f %17.13f %17.13f %17.13f %17.13f %17.13f %17.12f %20.9f %20.9f\n",species,x,y,z,charge,total_mx,total_my,total_mz,Qxx,Qxy,Qxz,Qyx,Qyy,Qyz,Qzx,Qzy,Qzz,alpha,vdwRmin,vdweps);
+  }
+  
+}' >>$outf
+result=$?
+if [ $result -ne 0 ]; then
+  error "Error translating the multipoles ($mpolef, $xlatf)" $err_translating_multipoles
+fi
+
+echo "    $padding SUCCESS"

@@ -1,0 +1,133 @@
+#!/bin/bash
+################################################################################
+# A part of TINKTEP, an interface between ONETEP and TINKER.                   #
+# Jacek Dziedzic, University of Southampton, May-December 2015.                #
+################################################################################
+
+################################################################################
+# *** cleanup ***
+# Cleans up temporary TINKTEP files.
+#
+# v1.17
+# Jacek Dziedzic, May-December 2015.
+################################################################################
+# Revision history:
+# v1.01 2015.12.22 -- Initial commit
+# v1.02 2016.01.12 -- Cleans up PBS and SLURM files, tinktep.{log,err,out}.
+# v1.03 2016.01.21 -- Only hash table logs are removed, not all logs.
+# v1.04 2016.04.11 -- 'all_except_restart_files' added.
+# v1.05 2016.04.28 -- qm_classes, qm_types cleaned up too.
+# v1.06 2016.05.10 -- Spares matrixblocks.
+# v1.07 2016.05.13 -- Cleans up analyze.log, dynamic.log.
+# v1.08 2016.09.16 -- Cleans up onetep launcher log(s).
+# v1.09 2016.11.10 -- Cleans up core dumps.
+# v1.10 2016.11.16 -- Cleans up MM polarisabilities (cache).
+# v1.11 2017.03.01 -- Cleans up tinktep.{log,err}, PBS .e and .o files.
+# v1.12 2017.03.01 -- The above is only done for 'cleanup all'.
+# v1.13 2017.03.02 -- Cleans up %rms, %lnv.
+# v1.14 2017.03.02 -- \$node* deleted only in 'all'.
+# v1.15 2017.03.07 -- Cleans up radial NGWFs.
+# v1.16 2017.05.15 -- Cleans up GDMA files even if swex_name in prefix.
+# v1.17 2017.09.20 -- Cleans up MM vdW params (cache).
+################################################################################
+
+rm -f \$QM2MM.lock
+rm -f \$MM2QM.lock
+rm -f *_qm_mm.err
+rm -f *_qm_mm.out
+rm -f *_qm_mm.analyze_log
+rm -f *_qm_mm.analyze_log.*
+rm -f *_qm_mm.dynamic_log
+rm -f *_qm_mm.dynamic_log.*
+rm -f *_qm_mm.poledit_log
+rm -f *_qm_mm.poledit_log.*
+rm -f *_qm_mm.001
+rm -f *_qm_mm.001f
+rm -f *_qm_mm.001v
+rm -f *_qm_mm.dyn
+rm -f *_qm_mm.f
+rm -f *_qm_mm.f.*
+rm -f *_qm_mm.error_message
+rm -f *_qm_mm.key
+rm -f *_qm_mm.key.*
+rm -f *_mm.energy_terms
+rm -f *_mm.energy_terms.*
+rm -f *_mm.mpoles
+rm -f *_mm.mpoles.*
+rm -f *_mm.mpoles_for_onetep
+rm -f *_mm.mpoles_for_onetep.*
+rm -f *_dma_multipoles*.txt
+rm -f hash_table*.log
+rm -f induced_dipoles.*
+rm -f induced_dipoles_and_polarisabilities.raw
+rm -f mm_indices
+rm -f mm_species
+rm -f mm.vdwparams
+rm -f mm.polarisabilities
+rm -f qm.polarisabilities
+rm -f qm_indices
+rm -f qm_species
+rm -f qm_classes
+rm -f qm_types
+rm -f poledit.in
+rm -f permanent_multipoles.processed.*
+rm -f permanent_multipoles.raw
+rm -f positions.raw
+rm -f *dma_multipoles_gdma_like.*
+rm -f error_message
+rm -f classical_species
+rm -f classical_charges
+rm -f *.bib
+rm -f *.val_bands
+rm -f *DOS.txt
+rm -f \$lnv
+rm -f \$rms
+rm -f %rms
+rm -f %lnv
+rm -f %MPIRUN_ERROR
+rm -f %WORKDIR_INACCESSIBLE
+rm -f %DONE
+#rm -f *.[0-9][0-9][0-9]* (matrixblocks)
+rm -f hash_table*.log
+rm -f mpirun_pid
+rm -f analyze.log
+rm -f dynamic.log
+rm -f onetep_launcher*.log
+rm -f core core.*
+rm -f *_ngwf*.radial
+rm -f *_grad*.radial
+rm -f *initial_rad_ngwf_*
+rm -f history.*
+rm -f *_qm.key
+rm -f *_qm.key.*
+rm -f *_qm_mm.xyz
+rm -f *_qm_mm.xyz.*
+
+rm -rf intermediate
+
+if [ "$1" == "-2" ]; then
+  exit 0
+fi
+
+rm -f *.coord_translation
+rm -f *_mm.xyz
+rm -f *_qm.xyz
+rm -f *_qm_mm.dat
+
+if [ "$1" == "all" ] || [ "$1" == "all_except_restart_files" ]; then
+  rm -f *.cube
+  rm -f *.dx
+  rm -f *.grd
+  rm -f slurm*out
+  rm -f tinktep.out
+  rm -f tinktep.err
+  rm -f tinktep.log
+  rm -f *.o[0-9]*
+  rm -f *.e[0-9]*
+  rm -f \$node* # <- (used as PBS_NODEFILE)
+fi
+
+if [ "$1" == "all" ]; then
+  rm -f *.tightbox_ngwfs
+  rm -f *.dkn
+fi

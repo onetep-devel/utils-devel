@@ -1,0 +1,72 @@
+ 
+ ! --- DMA ---
+ %block swri
+   for_dma 1 12 V 12 12 W
+ %endblock swri
+ 
+ %block species_swri-for_dma
+ H
+ O
+ %endblock species_swri-for_dma
+ 
+ 
+ dma_calculate T 
+ dma_use_ri for_dma
+ dma_max_l 1
+ dma_max_q 12
+ dma_metric ELECTROSTATIC
+ dma_bessel_averaging T
+ dma_scale_charge F
+ 
+ ! --- polarisable embedding ---
+ pol_emb_dma_min_l 0
+ pol_emb_dma_max_l 1
+ pol_emb_mpole_exclusion_radius 1.00 bohr
+ pol_emb_repulsive_mm_pot_cutoff 10.0 bohr
+
+ %block mm_rep_params
+ H   35 2.400 ! follows TINKTEP-2 paper
+ O  550 1.580 ! follows TINKTEP-2 paper
+ %endblock mm_rep_params
+ 
+ ! --- usual ONETEP ---
+ timings_level 3
+ output_detail VERBOSE
+ do_properties T
+
+ cutoff_energy 1000 eV
+ charge 0
+ xc_functional PBE
+ dispersion 1
+
+ minit_lnv 5
+ maxit_lnv 5
+ maxit_pen 0
+ lnv_check_trial_steps T
+ delta_e_conv  T
+ elec_energy_tol 1.6e-6 hartree
+
+ coulomb_cutoff_type SPHERE
+ coulomb_cutoff_radius 40.0 bohr
+ coulomb_cutoff_write_int F
+
+ %block species_atomic_set                                                       
+ H  "SOLVE"
+ O  "SOLVE"
+ %endblock species_atomic_set                                                    
+
+ %block species                                                                  
+ H  H 1 1 7.0
+ O  O 8 4 7.0
+ %endblock species                                                               
+
+ %block species_pot
+ H  'H_04.recpot'
+ O  'O_02.recpot'
+ %endblock species_pot
+
+ %block lattice_cart
+ 30.0  0.0  0.0
+  0.0 30.0  0.0
+  0.0  0.0 30.0
+ %endblock lattice_cart

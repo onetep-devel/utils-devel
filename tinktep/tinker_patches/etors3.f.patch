@@ -1,0 +1,8 @@
+--- /home/jd12g09/install/tinker713_original/tinker/source/etors3.f	2015-05-08 21:57:54.000000000 +0100
++++ /home/jd12g09/install/tinker70/source/patched/etors3.f	2016-01-14 14:07:02.000000000 +0000
+@@ -256 +256 @@
+-   20             format (' Torsion',3x,4(i7,'-',a3),f11.4,f12.4)
++   20             format (' Torsion',3x,4(i7,'-',a3),f11.4,f17.9)
+@@ -533 +533 @@
+-   20             format (' Torsion',3x,4(i7,'-',a3),f11.4,f12.4)
++   20             format (' Torsion',3x,4(i7,'-',a3),f11.4,f17.9)

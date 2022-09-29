@@ -1,0 +1,11 @@
+--- /home/jd12g09/install/tinker713_original/tinker/source/esolv3.f	2015-05-08 21:57:53.000000000 +0100
++++ /home/jd12g09/install/tinker70/source/patched/esolv3.f	2016-01-14 14:18:33.000000000 +0000
+@@ -133,5 +132,0 @@
+-         if (.not.use_mpole .and. .not.use_polar) then
+-            call chkpole
+-            call rotpole
+-            call induce
+-         end if
+@@ -166 +161 @@
+-   20       format (' Solvate',6x,i7,'-',a3,17x,3f12.4)
++   20       format (' Solvate',6x,i7,'-',a3,17x,3f17.9)

@@ -1,0 +1,8 @@
+--- /home/jd12g09/install/tinker713_original/tinker/source/eangle3.f	2015-05-08 21:57:53.000000000 +0100
++++ /home/jd12g09/install/tinker70/source/patched/eangle3.f	2016-01-14 14:06:12.000000000 +0000
+@@ -202 +202 @@
+-     &                          '-',a3,2x,2f10.4,f12.4)
++     &                          '-',a3,2x,2f10.4,f17.9)
+@@ -283 +283 @@
+-     &                          '-',a3,2x,2f10.4,f12.4)
++     &                          '-',a3,2x,2f10.4,f17.9)

@@ -1,0 +1,94 @@
+#!/bin/bash
+################################################################################
+# A part of TINKTEP, an interface between ONETEP and TINKER.                   #
+# Jacek Dziedzic, University of Southampton, May-December 2015.                #
+################################################################################
+
+################################################################################
+# *** xyz_to_properties ***
+# Executes 'analyze' for a single .xyz file or for a range of .nnn files that
+# form a TINKER trajectory. No .key files are created. The resultant analyze
+# log is parsed to extract properties, currently these are:
+# - total energy
+# - total dipole moment.
+#
+# The properties are written to .log files, prefixed by the snapshot number
+# (if parsing .nnn files), or by -1 (if parsing a single .xyz file).
+#
+# v1.01
+# Jacek Dziedzic, May-December 2015.
+################################################################################
+# Revision history:
+# v1.00 2016.01.?? -- Initial version.
+# v1.01 2016.01.25 -- Clean-up, error codes.
+################################################################################
+
+myname="xyz_to_properties"
+
+#-------------------------------------------------------------------------------
+# Aborts, printing a message and returning an error code.
+#-------------------------------------------------------------------------------
+function error() {
+  echo "!!! $myname: ERROR #$2: $1. Aborting!" >&2
+  exit $2
+}
+#-------------------------------------------------------------------------------
+
+################################################################################
+# Error codes
+################################################################################
+err_improper_invocation=101
+
+################################################################################
+# main()
+################################################################################
+
+if [ $# -ne 5 ] && [ $# -ne 2 ]; then
+  error "Improper invocation. Supply a filename root, .prm filename followed \
+by three numbers: the first and last snapshot indices, and an increment, or\
+nothing, to just process a single .xyz file" $err_improper_invocation
+fi
+
+root=$1
+prmfile=$2
+if [ $# -eq 5 ]; then
+  n0=$3
+  n1=$4
+  dn=$5
+else
+  n0=-1
+  n1=-1
+  dn=1
+  root=`echo $root | sed -r "s/\.xyz$//"`
+fi  
+outf_dipole=$root"_dipole_moment.log"
+outf_epot=$root"_energy.log"
+
+rm -f $outf
+rm -f $outf_dipole
+rm -f $outf_epot
+for n in `seq $n0 $dn $n1`; do
+  if [ "$n" != "-1" ]; then
+    ext=`echo $n | awk '{printf("%03d",$1)}'`
+    f=$root.$ext
+    n=`echo $f | sed "s/.*\.//"`
+  else
+    f=$root.xyz
+    n=-1
+  fi
+  echo "Examining $f. "
+  echo -e "$prmfile\nme" | analyze $f >analyze.log
+  cat analyze.log | grep Dipole | awk -v n=$n '
+  {
+    if($0 ~ "Magnitude") {
+      magn=$5;
+    }
+    else {
+      dx=$4; dy=$5; dz=$6;
+      print(n,magn,dx,dy,dz);
+    }
+  }' >>$outf_dipole
+  cat analyze.log | grep "Total Potential Energy :" | awk -v n=$n '{print n,$5}' >>$outf_epot
+done
+
+rm -f analyze.log

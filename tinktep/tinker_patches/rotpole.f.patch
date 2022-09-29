@@ -1,0 +1,13 @@
+--- /home/jd12g09/install/tinker713_original/tinker/source/rotpole.f	2015-05-08 21:57:53.000000000 +0100
++++ /home/jd12g09/install/tinker70/source/patched/rotpole.f	2016-11-25 12:41:00.000000000 +0000
+@@ -21,0 +22 @@
++      use inform
+@@ -23,0 +25 @@
++      integer m
+@@ -31,0 +34,6 @@
++         if(print_global_mpoles) then
++            do m = 1, 13
++               write(*,'(a,i8,a,i2,a,f21.13)') 
++     c              'GLOBAL_MPOLE: ',i,' ',m,' ',rpole(m,i)
++            end do
++         end if

@@ -1,0 +1,21 @@
+#!/bin/bash
+# Required by 'md2thermo'.
+#
+# getcol -- Jacek Dziedzic, jaca@kdm.task.gda.pl
+#
+# Extracts a specified column from a file:
+# getcol myfile.txt 3
+# or
+# cat myfile.txt | getcol 3
+#
+# Negative column numbers correspond to counting from the last column backwards.
+#
+if [ $# -eq 1 ]; then
+  name=/dev/stdin
+  num=$1
+else
+  name="$1"
+  num=$2
+fi
+
+cat "$name" | awk -v n=$num '{if(n>0) print $n; else print $(NF+n+1)}'

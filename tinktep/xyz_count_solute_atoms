@@ -1,0 +1,105 @@
+#!/bin/bash
+################################################################################
+# A part of TINKTEP, an interface between ONETEP and TINKER.                   #
+# Jacek Dziedzic, University of Southampton, May-December 2015.                #
+################################################################################
+
+################################################################################
+# *** xyz_count_solute_atoms ***
+# Calculates the number of solute atoms in a TINKER .xyz file.
+#
+# Solute atoms are distinguished by having indices greater than solute_threshold
+# which is 400 by default, and can be overridden through the environment
+# variable TINKTEP_SOLUTE_THRESHOLD.
+#
+# If TINKTEP_SOLUTE_NATOMS is defined, it is returned instead, and no counting
+# is performed. This can be used as an override.
+#
+# If no problems arise, the number of solute atoms is echoed, and the return
+# code is 0. Otherwise a non-zero error code is returned.
+#
+# v1.03
+# Jacek Dziedzic, May-December 2015.
+################################################################################
+# Revision history:
+# v1.00 2016.01.?? -- Initial version.
+# v1.01 2016.01.25 -- Cleanup, uses xyz_bbox_line, error codes.
+# v1.02 2016.01.25 -- Honours TINKTEP_SOLUTE_THRESHOLD.
+# v1.03 2016.07.25 -- Honours TINKTEP_SOLUTE_NATOMS.
+################################################################################
+
+myname="xyz_count_solute_atoms"
+
+# Atom types larger than that are deemed to belong to the solute
+solute_threshold=400 # Default. Use TINKTEP_SOLUTE_THRESHOLD to override.
+
+#-------------------------------------------------------------------------------
+# Aborts, printing a message and returning an error code.
+#-------------------------------------------------------------------------------
+function error() {
+  echo "!!! $myname: ERROR #$2: $1. Aborting!" >&2
+  exit $2
+}
+#-------------------------------------------------------------------------------
+
+################################################################################
+# Error codes
+################################################################################
+err_improper_invocation=101
+err_xyz_file_unreadable=102
+err_bbox=103
+err_nsolat=104
+err_malformed_xyzf=105
+
+################################################################################
+# main()
+################################################################################
+
+if [ $# -ne 1 ]; then
+  error "Improper invocation. Supply the filename of a .xyz file" $err_improper_invocation
+fi
+
+xyzf=$1
+
+if [ ! -r $xyzf ]; then
+  error "$xyzf does not exist or is unreadable" $err_xyz_file_unreadable
+  exit 1
+fi
+
+# See if TINKTEP_SOLUTE_NATOMS defined.
+if [ ! -z "$TINKTEP_SOLUTE_NATOMS" ]; then
+  echo "$myname: Overriding solute_natoms to $TINKTEP_SOLUTE_NATOMS." >&2
+  echo $TINKTEP_SOLUTE_NATOMS
+  exit 0
+fi
+
+# See if TINKTEP_SOLUTE_THRESHOLD defined.
+if [ ! -z "$TINKTEP_SOLUTE_THRESHOLD" ]; then
+  echo "$myname: Overriding solute_threshold to $TINKTEP_SOLUTE_THRESHOLD." >&2
+  solute_threshold=$TINKTEP_SOLUTE_THRESHOLD
+fi
+
+# Find the number of solute atoms.
+bbox_line=`xyz_bbox_line $xyzf` || error "Could not verify the presence of, or parse, the BBox line in the .xyz file $xyzf" $err_bbox
+bbox_line_present=`echo $bbox_line | awk '{print ($4 > 0)}'`
+let "first_atom_line=2+bbox_line_present"
+nsolat=`tail -n +$first_atom_line $xyzf | awk -v th=$solute_threshold '
+{
+  if(NF < 6) {
+    exit 1;
+  }
+  if($6 > th) {
+    # Solute atom
+    nsolat++;
+  };
+}
+END {
+  printf("%d\n",nsolat);
+}
+'` || error "Malformed .xyz file $xyzf" $err_malformed_xyzf
+if [ -z "$nsolat" ] || [ ! $nsolat -ge 0 ]; then
+  error "Could not determine the number of solute atoms in $xyzf" $err_nsolat
+fi
+
+echo $nsolat
+exit 0

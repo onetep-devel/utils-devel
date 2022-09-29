@@ -1,0 +1,131 @@
+#!/bin/bash
+################################################################################
+# A part of TINKTEP, an interface between ONETEP and TINKER.                   #
+# Jacek Dziedzic, University of Southampton, May-December 2015.                #
+################################################################################
+
+################################################################################
+# *** run_poledit ***
+# Feeds the GDMA-like file to POLEDIT, producing a _qm.key file.
+#
+# v1.42
+# Jacek Dziedzic, May-December 2015.
+################################################################################
+# Revision history:
+# v1.30 2015.12.11 -- Switches to the 'None' frame to elide POLEDIT frame
+#                     rotations, which misbehave for dimers (when 'Z-only' is used).
+# v1.35 2015.12.16 -- Verifies there is only one polarisation group in QM.
+# v1.36 2015.12.22 -- Error codes.
+# v1.40 2016.01.14 -- Support for ONETEP-GDMA-aware poledit that does not
+#                     remove integroup dipoles at all.
+# v1.41 2017.05.15 -- GDMA filename uses swex_name in prefix.
+# v1.42 2017.06.05 -- Improved error message.
+################################################################################
+
+myname="run_poledit"
+exe="poledit"
+poleditinfile="poledit.in"
+mpole_set_name="_scf_dma_total_"
+#mpole_set_name="_"
+
+#-------------------------------------------------------------------------------
+# Aborts, printing a message and returning an error code.
+#-------------------------------------------------------------------------------
+function error() {
+  echo "!!! $myname: ERROR #$2: $1. Aborting!" >&2
+  exit $2
+}
+#-------------------------------------------------------------------------------
+
+################################################################################
+# Error codes
+################################################################################
+err_improper_invocation=101
+err_missing_executable=102
+err_missing_infile=103
+err_outkeyfile_exists=104
+err_outlogfile_exists=105
+err_could_not_determine_n_qm_atoms=106
+err_running_poledit=107
+err_multiple_pol_groups=108
+err_renaming_keyfile=109
+
+################################################################################
+# main()
+################################################################################
+padding=`echo $myname | sed "s/./ /g"`" "
+
+if [ $# -ne 1 ]; then
+  error "Improper invocation. Supply the ONETEP gdma_like txt file as the only argument" $err_improper_invocation
+fi
+
+if ! which $exe >/dev/null; then
+  error "The file $exe (part of TINKER) does not exist or is not executable" $err_missing_executable
+fi
+
+infile=$1
+outkeyfile=`echo $infile | sed -r "s/_mm"$mpole_set_name"dma_multipoles_gdma_like\.txt$/.key/"`
+outlogfile=`echo $infile | sed -r "s/"$mpole_set_name"dma_multipoles_gdma_like\.txt$/.poledit_log/"`
+keyfile_from_poledit=`echo $infile | sed -r "s/\.txt$/.key/"`
+xyzfile_from_poledit=`echo $infile | sed -r "s/\.txt$/.xyz/"`
+
+echo "*** $myname: Running POLEDIT. Input: $infile."
+echo "    $padding                  Output/key: $outkeyfile."
+echo "    $padding                  Output/log: $outlogfile."
+
+if [ ! -r $infile ]; then
+  error "$infile does not exist or is unreadable" $err_missing_infile
+fi
+
+if [ -e $outkeyfile ]; then
+  error "$outkeyfile already exists, I'm afraid to overwrite it" $err_outkeyfile_exists
+fi
+
+if [ -e $outlogfile ]; then
+  error "$outlogfile already exists, I'm afraid to overwrite it" $err_outlogfile_exists
+fi
+
+n_qm_atoms=`cat $infile | grep -c "Maximum rank" | awk '{print $1+0}'`
+
+if [ "$n_qm_atoms" == "0" ]; then
+  error "Could not determine the number of atoms in $infile" $err_could_not_determine_n_qm_atoms
+fi
+
+####################################################################
+# This runs poledit, chooses '1' for GDMA input, provides the input
+# filename, then presses ENTER a few times to accept defaults.
+####################################################################
+echo "1" >$poleditinfile
+echo "$infile" >> $poleditinfile
+for n_qm_atom in `seq 1 $n_qm_atoms`; do
+  echo "$n_qm_atom 0 0" >>$poleditinfile
+done
+echo "" >>$poleditinfile
+echo "" >>$poleditinfile
+echo "" >>$poleditinfile
+echo "" >>$poleditinfile
+echo "" >>$poleditinfile
+$exe >$outlogfile <$poleditinfile
+result=$?
+####################################################################
+if [ $result -ne 0 ]; then
+  error "Error $result running POLEDIT" $err_running_poledit
+fi
+
+intergroup_dipole=`cat $outlogfile | grep -A4 "Determination of Intergroup Induced Dipoles" | tail -n 1 | awk '{printf("%s",$2)}'`
+if [ "$intergroup_dipole" != "0.0000000000" ] && [ ! -z "$integroup_dipole" ]; then
+  error "Your QM system got split into more than one polarisation group. This would cause POLEDIT to remove intergroup polarisation, breaking consistency, so I'm stopping right here" $err_multiple_pol_groups
+fi
+
+# Delete the .xyz file POLEDIT produces and the .in file
+rm -f $xyzfile_from_poledit
+rm -f $poleditinfile
+
+# Rename the resultant .key file
+mv -f $keyfile_from_poledit $outkeyfile
+result=$?
+if [ $result -ne 0 ]; then
+  error "Error renaming $keyfile_from_poledit to $outkeyfile" $err_renaming_keyfile
+fi
+
+echo "    $padding                  SUCCESS."

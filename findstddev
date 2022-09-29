@@ -1,0 +1,31 @@
+#!/bin/bash
+
+# Required by 'md2thermo'.
+# Finds the standard deviation of a file of numbers.
+
+tmp="/tmp/\$findstddev"
+
+if [ $# -gt 1 ]; then
+  echo "Improper invocation: supply either no parameters (to read from the stdin) or one parameter -- the input filename."
+  exit 129
+fi
+
+if [ $# -eq 1 ]; then
+  filename="$1"
+else
+  filename="/dev/stdin"
+fi
+
+# This is tricky in the case where we're reading from standard input, such as
+# when 'getcol data 2 | findstddev' is executed. We prefer to compute the average
+# first, and that consumes the data in the stream. After that there's nothing to
+# be read from the standard input. To work around this, we stash a copy of the
+# data in /tmp for a brief moment.
+
+cp "$filename" "$tmp"
+
+avg=`cat "$tmp" | findavg | getcol 1`
+
+cat "$tmp" | awk -v avg="$avg" 'BEGIN{sum=0; count=0} {for(i=1;i<=NF;++i) {sum+=($i-avg)^2; count++;} } END{print sqrt(sum/count)," with ",count, " entries."}'
+
+rm -f "$tmp"

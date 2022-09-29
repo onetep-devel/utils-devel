@@ -1,0 +1,5 @@
+#!/bin/bash
+
+# Required by 'md2thermo'.
+
+cat /dev/stdin | awk -v format=$1 '{printf(format"\n",$1)}'

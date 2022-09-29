@@ -1,0 +1,25 @@
+#!/bin/bash
+
+# Extracts the convergence indicators of a ONETEP BFGS geometry optimisation 
+# calculation from the output file, and compares them to the convergence tolerances. 
+# The results are coloured to indicate which parameters are converged and which are not.
+# Requires 'summarise' to be in $PATH.
+# By Nicholas Hine
+
+summarise $1 | 
+    awk 'BEGIN {print "   N         dE/ion         |F|max        |dR|max           dEtot"; N=0;E=0;inBFGS=0;Smax=0};
+         /enthalpy/ {if(E==0) {E0=$7; Estr="A";}; E=$7; Estr="\033[0m"};
+         /dE\/ion/ {inBFGS=1;dE=$4; dEtol=$6};
+         /F\|/ {inBFGS=1;F=$4; Ftol=$6};
+         /Smax/ {inBFGS=1; Smax=$4; Smaxtol=$6;};
+         /dR/ {inBFGS=1;dR=$4; dRtol=$6;}
+         inBFGS&&($0!~/\- BFGS/) {inBFGS=0; N=N+1;
+               Nstr="\033[0m";
+               if (dE==0) {dEstr="\033[0m"} else {if (dE<dEtol) {dEstr="\033[2;32m"} else {dEstr="\033[0;31m"}};
+               if (F<Ftol) {Fstr="\033[2;32m"} else {Fstr="\033[0;31m"};
+               if (dR==0) {dRstr="\033[0m"} else {if (dR<dRtol) {dRstr="\033[2;32m"} else {dRstr="\033[0;31m"}};
+               if (Smax==0) {Smaxstr="\033[0m"} else {if (Smax<Smaxtol) {Smaxstr="\033[2;32m"} else {Smaxstr="\033[0;31m"}};
+               printf "%s%4d %s%13.8e %s%13.8e %s%13.8e %s%13.8e %s%15.8e\n", 
+                    Nstr,N-1,dEstr,dE,Fstr,F,dRstr,dR,Smaxstr,Smax,Estr,E-E0;}
+         END {printf "%s%s\n","\033[0m","--";
+              printf "%4d %12.8e %12.8e %12.8e %12.8e \n",99, dEtol,Ftol,dRtol,Smaxtol;}'

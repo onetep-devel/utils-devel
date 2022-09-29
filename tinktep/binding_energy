@@ -1,0 +1,177 @@
+#!/bin/bash
+################################################################################
+# A part of TINKTEP, an interface between ONETEP and TINKER.                   #
+# Jacek Dziedzic, University of Southampton, May-December 2015.                #
+################################################################################
+
+################################################################################
+# *** binding_energy ***
+# Calculates a TINKER binding energy between a solute and solvent.
+#
+# Splits the input .xyz file, assumed to contain a solute in solvent, into
+# a solute part and a solvent part, and runs 'analyze' for each of the three.
+# Minds the BBox line in the input file, if present, propagating it to the
+# solute and solvent parts. For information on how an atom is deemed to belong
+# to the solute, see comments in xyz_count_solute_atoms.
+#
+# A key file is automatically constructed and then deleted. By default this key
+# file is empty for OBC (when there is no BBox line), and for PBC it contains
+# 'ewald' as the sole directive. If you want something specific in these files,
+# set TINKER_OBC_KEYFILE_CONTENTS and TINKER_PBC_KEYFILE_CONTENTS to suitable 
+# strings (with \n embedded) if necessary. These will then *replace* the defaults 
+# (so include 'ewald' in TINKER_PBC_KEYFILE_CONTENTS too, if desired).
+#
+# v1.01
+# Jacek Dziedzic, May-December 2015.
+################################################################################
+# Revision history:
+# v1.00 2016.01.?? -- Initial version.
+# v1.01 2016.01.25 -- Cleanup, use of xyz_solute_split, error codes.
+################################################################################
+
+myname="binding_energy"
+
+# Default contents of generated .key files for OBC and PBC respectively.
+obc_keyfile_contents=""
+pbc_keyfile_contents="ewald"
+
+#-------------------------------------------------------------------------------
+# Aborts, printing a message and returning an error code.
+#-------------------------------------------------------------------------------
+function error() {
+  echo "!!! $myname: ERROR #$2: $1. Aborting!" >&2
+  exit $2
+}
+#-------------------------------------------------------------------------------
+
+################################################################################
+# Error codes
+################################################################################
+err_improper_invocation=101
+err_nsolat=102
+err_ntotat=103
+err_bad_nsolat=104
+err_bad_ntotat=105
+err_xyzf_unreadable=106
+err_prmf_unreadable=107
+err_keyf_exists=108
+err_in_xyz_solute_split=109
+err_in_xyz_to_properties=110
+err_bbox=111
+
+################################################################################
+# main()
+################################################################################
+
+if [ $# -ne 2 ]; then
+  error "Improper invocation. Supply the filename of a .xyz file (or .nnn snapshot) and the name of a .prm file" $err_improper_invocation
+fi
+
+xyzf=$1
+prmf=$2
+
+if [ ! -r $xyzf ]; then
+  error "$xyzf does not exist or is unreadable" $err_xyzf_unreadable
+fi
+
+if [ ! -r $prmf ]; then
+  error "$prmf does not exist or is unreadable" $err_prmf_unreadable
+fi
+
+# Honour the environment variable overrides, if set.
+if [ ! -z "$TINKTEP_OBC_KEYFILE_CONTENTS" ]; then
+  echo "$myname: Overriding obc_keyfile_contents to $TINKTEP_OBC_KEYFILE_CONTENTS."
+  obc_keyfile_contents=$TINKTEP_OBC_KEYFILE_CONTENTS
+fi
+
+if [ ! -z "$TINKTEP_PBC_KEYFILE_CONTENTS" ]; then
+  echo "$myname: Overriding pbc_keyfile_contents to $TINKTEP_PBC_KEYFILE_CONTENTS."
+  pbc_keyfile_contents=$TINKTEP_PBC_KEYFILE_CONTENTS
+fi
+
+
+# xyz_split doesn't like non-xyz extensions, so work on a copy if the extension is different.
+ext=`echo $xyzf | sed -r "s/.*\.//"`
+root=`echo $xyzf | sed -r "s/\.[xyz0-9]*$//"`
+if [ "$ext" == "xyz" ]; then
+  copy=0
+else
+  paddedframe=`echo $xyzf | sed -r "s/.*\.//" | awk '{printf("%03d",$1)}'`
+  root=$root"_$paddedframe"
+  new_xyzf=$root".xyz"
+  cp $xyzf $new_xyzf
+  xyzf="$new_xyzf"
+  copy=1
+fi
+
+keyf=$root.key
+
+if [ -r $keyf ]; then
+  error "$keyf exists, I'm afraid to overwrite it" $err_keyf_exists
+fi
+
+# Find the number of solute atoms.
+nsolat=`xyz_count_solute_atoms $xyzf` || error "Could not determine the number of solute atoms" $err_nsolat
+ntotat=`head -n 1 $xyzf | awk '{print $1}'` || error "Could not determine the number of atoms" $err_ntotat
+
+if [ -z "$nsolat" ] || [ ! $nsolat -gt 0 ]; then
+  error "Invalid number of solute atoms in $xyzf. Zero is not allowed, BTW" $err_bad_nsolat
+fi
+
+if [ -z "$ntotat" ] || [ ! $ntotat -gt 0 ]; then
+  error "Invalid number of atoms in $xyzf. Zero is not allowed, BTW" $err_bad_ntotat
+fi
+
+# See if there's a BBox line in the .xyz file, to determine OBC or PBC.
+bbox_line=`xyz_bbox_line $xyzf` || error "Could not verify the presence of, or parse, the BBox line in the .xyz file $xyzf" $err_bbox
+bbox_line_present=`echo $bbox_line | awk '{print ($4 > 0)}'`
+
+# - Effect a solute-solvent split
+xyzf_solute=$root"_solute".xyz
+keyf_solute=$root"_solute".key
+xyzf_no_sol=$root"_no_sol".xyz
+keyf_no_sol=$root"_no_sol".key
+rm -f $xyzf_solute $xyzf_no_sol
+xyz_solute_split $xyzf || error "Error in xyz_solute_split" $err_in_xyz_solute_split
+
+# --- do the solute ---
+solute_energy_log=$root"_solute_energy.log"
+dipole_moment_log=$root"_solute_dipole_moment.log"
+if [ "$bbox_line_present" == "1" ]; then
+  echo -e $pbc_keyfile_contents >$keyf_solute
+else
+  echo -e $obc_keyfile_contents >$keyf_solute
+fi
+xyz_to_properties $xyzf_solute $prmf || error "Error in xyz_to_properties" $err_in_xyz_to_properties
+E_solute=`cat $solute_energy_log | awk '{print $2}'`
+rm -f $dipole_moment_log $solute_energy_log $keyf_solute $xyzf_solute
+
+# --- do the solvent ---
+no_sol_energy_log=$root"_no_sol_energy.log"
+dipole_moment_log=$root"_no_sol_dipole_moment.log"
+if [ "$bbox_line_present" == "1" ]; then
+  echo -e $pbc_keyfile_contents >$keyf_no_sol
+else
+  echo -e $obc_keyfile_contents >$keyf_no_sol
+fi
+xyz_to_properties $xyzf_no_sol $prmf || error "Error in xyz_to_properties" $err_in_xyz_to_properties
+E_no_sol=`cat $no_sol_energy_log | awk '{print $2}'`
+rm -f $dipole_moment_log $no_sol_energy_log $keyf_no_sol $xyzf_no_sol
+
+# --- do the entire system ---
+if [ "$bbox_line_present" == "1" ]; then
+  echo -e $pbc_keyfile_contents >$keyf
+else
+  echo -e $obc_keyfile_contents >$keyf
+fi
+total_energy_log=$root"_energy.log"
+dipole_moment_log=$root"_dipole_moment.log"
+xyz_to_properties $xyzf $prmf || error "Error in xyz_to_properties" $err_in_xyz_to_properties
+E_total=`cat $total_energy_log | awk '{print $2}'`
+rm -f $dipole_moment_log $total_energy_log $keyf
+echo $E_total $E_no_sol $E_solute | awk '{print $1,$2,$3,$1-$2-$3}'
+
+# Clean up the copy, if working on a copy.
+if [ "$copy" == "1" ]; then
+  rm -f $xyzf
+fi

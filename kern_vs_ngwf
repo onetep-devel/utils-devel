@@ -1,0 +1,87 @@
+#!/bin/bash
+
+# Views the convergence of an ongoing ONETEP calculation, and displays various coloured 
+# indicators as to the convergence of the calculation. Examine the results to view 
+# decreases in energy, commutator, and ratio of optimisation energy gain from kernel and 
+# NGWF optimisation and spot common problems (requires some experience to use successfully).
+# By Nicholas Hine
+
+awk 'BEGIN {oldcom = -1; comstart=0; cgreset=0;}
+
+     # Reset iteration counter when a new electronic minimisation is found
+     /Penalty functional density kernel optimisation/||
+         /Starting BFGS iteration/||/BFGS: improving iteration/ {N=0};
+         
+     # When the LNV iteration header is found, set iteration to 1
+     /<<<<<<<<<<<<<< LNV/&&N==0 {N=1};
+     
+     # When the LScoef line is found, start counting iterations until 
+     # the end of LNV iterations is found
+     /LScoef/ {
+        l=0;
+        # Count forward to first LNV iteration
+        while ($1!="1"&&l<1000||($0~/\[/))
+        {
+           getline;
+           l=l+1;
+        }
+        # Set commutator and starting energy if the first iteration was found
+        if (l<1000)
+        {
+           testart=$2;
+           comstart=$4;
+        }
+        # Otherwise they were not found
+        else
+        {
+           testart = 0;
+           te0 = 0;
+           comstart = 0;
+        }
+        p=1;
+        te=0;
+        # Look for strings indicating LNV iterations have completed
+        while($0!~/Finished/&&$0!~/LNV density kernel optimisation converged/&&l<1000)
+        {
+           # When we find the pth iteration, store the latest energy and commutator
+           if ($1==p)
+           {
+              te=$2;
+              com=$4;
+              p=p+1
+           };
+           getline;
+           l=l+1
+        };
+        # Calculate actual energy gain from NGWF optimisation
+        if (N>1) {
+           printf "%s%2d%s","Iteration ",N-1," Actual NGWF opt gain:\033[0;34m"
+           printf "%17.10f%s",te-te0,"\033[0m";
+           if (cgreset==1) {printf "%s\n","   (CG Reset)";}
+           else {printf "\n";};
+        }
+        
+        # Print information about the improvement of the commutator
+        if (comstart>0)
+        {
+           if (oldcom==-1) {oldcom=comstart};
+           printf "%s%2d%s%19.10f","Iteration ",N," Initial commutator:\033[2;32m",comstart;
+           printf "%s%14.10f%s\n","\033[0m  (N/O Ratio:\033[0;35m",comstart/oldcom,"\033[0m)";
+           printf "%s%2d%s%19.10f","Iteration ",N," Final commutator:  \033[0;32m",com;
+           printf "%s%14.10f%s\n","\033[0m  (I/F Ratio:\033[0;33m",com/comstart,"\033[0m)";
+           oldcom = comstart;
+        }
+        # Calculate and print energy gain from kernel optimisation
+        kerngain=te-testart; 
+        printf "%s%2d%s%20.10f%s\n","Iteration ",N," Kernel opt gain:\033[0;31m",kerngain," \033[0m";
+     };
+     # Look out for CG resets
+     /Conjugate gradients coeff/ {if ($5==0) {cgreset=1;} else {cgreset=0}};
+     # Find current energy at start of NGWF line search
+     /at step 0/ {te0=$6;};
+     # Find predicted energy at end of NGWF line search
+     /al predic/ {tepred=$4;
+                  ngwfgain=tepred-te0;
+                  printf "%s%2d%s%17.10f%s%15.10f%s\n","Iteration ",N," Pred NGWF opt gain:  \033[2;34m",ngwfgain,
+                         "\033[0m   (K/N Ratio\033[0;36m",kerngain/ngwfgain,"\033[0m)";
+                  N=N+1};' $1

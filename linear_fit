@@ -1,0 +1,113 @@
+#!/bin/bash
+
+# Required by 'md2thermo'.
+
+##########################################################################
+# Calculates a least-squares fit of f(x)=ax+b to XY, 2-column data.
+# Returns a, b and the regression coefficient.
+# v4.10
+##########################################################################
+# v1.00 2011.10.27 Jacek Dziedzic, jack.erede@gmail.com
+# v2.00 2016.11.01, outputs std errors in a, b.
+# v3.00 2017.11.06, outputs RMS and signed errors of model and of data.
+# v4.00 2018.02.09, optionally specify columns in arguments.
+# v4.10 2019.10.14, ignores lines beginning with "#" for consistency with gnuplot.
+
+# ----------------------------------------------
+abort() {
+  echo "Aborting!" >&2
+  exit 1
+}
+
+# ----------------------------------------------
+# main() 
+# ----------------------------------------------
+if [ $# -ne 1 ] && [ $# -ne 3 ]; then
+  echo "Improper invocation. Supply one parameter -- the name of a two-column datafile. Or three parameters -- datafile and column numbers." >&2
+  abort
+fi
+
+f=$1
+
+if [ $# -eq 3 ]; then
+  xcol=$2
+  ycol=$3
+else
+  xcol=1
+  ycol=2
+fi
+
+if [ ! -r $f ]; then
+  echo "$f does not exist or is unreadable." >&2
+  abort
+fi
+
+ndata=`wc -l $f | sed -r "/^ *#/d" | awk '{print $1}'`
+
+if [ $ndata -lt 2 ]; then
+  echo "Need at least two datapoints." >&2
+  abort
+fi
+
+a_b_xavg_yavg=`cat $f | sed -r "/^ *#/d" | awk -v xcol=$xcol -v ycol=$ycol '
+{
+  xavg+=$(xcol);
+  yavg+=$(ycol);
+  xyavg+=$(xcol)*$(ycol);
+  x2avg+=$(xcol)*$(xcol);
+  N++;
+}
+END {
+  xavg/=N;
+  yavg/=N;
+  xyavg/=N;
+  x2avg/=N;
+  
+  a=(xyavg-xavg*yavg)/(x2avg-xavg*xavg);
+  b=yavg-a*xavg;
+  
+  printf("%.12e %.12e\n %.12e %.12e\n",a,b,xavg,yavg);
+}
+'`
+
+a=`echo $a_b_xavg_yavg | awk '{print $1}'`
+b=`echo $a_b_xavg_yavg | awk '{print $2}'`
+xavg=`echo $a_b_xavg_yavg | awk '{print $3}'`
+yavg=`echo $a_b_xavg_yavg | awk '{print $4}'`
+
+# http://mathworld.wolfram.com/LeastSquaresFitting.html
+# note they reverse 'a' and 'b'.
+# Agreement tested with gnuplot's fit.
+cat $f | sed -r "/^ *#/d" | awk -v a=$a -v b=$b -v xavg=$xavg -v yavg=$yavg -v xcol=$xcol -v ycol=$ycol '
+{
+  num+=($(xcol)-xavg)*($(ycol)-yavg);
+  den1+=($(xcol)-xavg)*($(xcol)-xavg);
+  den2+=($(ycol)-yavg)*($(ycol)-yavg);
+  rms+=(a*$(xcol)+b-$(ycol))*(a*$(xcol)+b-$(ycol));
+  sgn+=(a*$(xcol)+b-$(ycol));
+  rmsdata+=($(ycol)-$(xcol))*($(ycol)-$(xcol));;
+  sgndata+=($(ycol)-$(xcol));
+  n++;
+}
+END {
+  r=num/sqrt(den1*den2);
+  s=sqrt((den2-num*num/den1)/(n-2));
+  rmserr=sqrt(rms/n);
+  sgnerr=sgn/n;
+  rmserrdata=sqrt(rmsdata/n);
+  sgnerrdata=sgndata/n;
+  printf("a: %.12e\n",a);
+  printf("b: %.12e\n",b);
+  printf("r: %.12e\n",r);
+  stderra=s/sqrt(den1);
+  stderrb=s*sqrt(1.0/n+xavg*xavg/den1);
+  printf("std_err_in_a: %.12e\n",stderra);
+  printf("std_err_in_b: %.12e\n",stderrb);
+  printf("rel_std_err_in_a: %.12e%\n",stderra/sqrt(a*a)*100.0); # a can be -ve, so |a| used
+  printf("rel_std_err_in_b: %.12e%\n",stderrb/sqrt(b*b)*100.0); # b can be -ve, so |b| used
+  printf("rms_err_fit_vs_data: %.12e\n",rmserr);
+  printf("sgn_err_fit_vs_data: %.12e (should be numerical zero by def of linear fit)\n",sgnerr);
+  printf("rms_err_data_y_vs_data_x: %.12e\n",rmserrdata);
+  printf("sgn_err_data_y_vs_data_x: %.12e\n",sgnerrdata);
+}
+'

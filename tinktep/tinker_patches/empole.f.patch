@@ -1,0 +1,14 @@
+--- /home/jd12g09/install/tinker713_original/tinker/source/empole.f	2015-05-08 21:57:53.000000000 +0100
++++ /home/jd12g09/install/tinker70/source/patched/empole.f	2017-05-12 17:04:40.000000000 +0100
+@@ -214,0 +215 @@
++                  write(*,*) '@NEWDEBUG-A ', r2, kk, ii
+@@ -416,0 +418 @@
++                  write(*,*) '@NEWDEBUG-B ', r2, kk, ii
+@@ -752,0 +755 @@
++                  write(*,*) '@NEWDEBUG-C ', r2, kk, ii
+@@ -1164,0 +1168 @@
++                  write(*,*) '@NEWDEBUG-D ', r2, kk, ii
+@@ -1361,0 +1366 @@
++                  write(*,*) '@NEWDEBUG-E ', r2, kk, ii
+@@ -1807,0 +1813 @@
++                  write(*,*) '@NEWDEBUG-F ', r2, kk, ii

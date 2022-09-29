@@ -1,0 +1,5 @@
+--- /home/jd12g09/install/tinker713_original/tinker/source/etortor3.f	2015-05-08 21:57:53.000000000 +0100
++++ /home/jd12g09/install/tinker70/source/patched/etortor3.f	2016-01-14 14:19:42.000000000 +0000
+@@ -253 +253 @@
+-   20             format (' TorTor',2x,5i7,2x,2f10.4,f12.4)
++   20             format (' TorTor',2x,5i7,2x,2f10.4,f17.9)

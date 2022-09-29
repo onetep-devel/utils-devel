@@ -1,0 +1,13 @@
+#!/bin/bash
+
+# Required by 'md2thermo'.
+
+if [ $# -eq 1 ]; then
+  name=/dev/stdin
+  num=$1
+else
+  name="$1"
+  num=$2
+fi
+
+cat $name | awk -v n=$num '{if(NR==n) {print $0; exit;}}'

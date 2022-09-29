@@ -1,0 +1,264 @@
+--- /home/jd12g09/install/tinker713_original/tinker/source/induce.f	2015-05-08 21:57:53.000000000 +0100
++++ /home/jd12g09/install/tinker70/source/patched/induce.f	2017-05-12 17:32:57.000000000 +0100
+@@ -108 +108 @@
+-   60             format (i8,3x,4f16.8)
++   60             format (i8,3x,4f22.14)
+@@ -146 +146 @@
+-  130                format (i8,3x,4f16.8)
++  130                format (i8,3x,4f22.14)
+@@ -179,0 +180,3 @@
++cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
++      use keys
++cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+@@ -210,0 +214,8 @@
++cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
++      integer nlist,next
++      integer, allocatable :: list(:)
++      logical, allocatable :: douind(:)
++      character*20 keyword
++      character*12000 record
++      character*12000 string
++cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+@@ -212,0 +224,50 @@
++c     get any keywords containing polarizable atom parameters
++c
++      allocate (douind(n))
++      allocate (list(n))
++      nlist = 0
++      do i = 1, n
++         list(i) = 0
++         douind(i) = .true.
++      end do
++      do j = 1, nkey
++         next = 1
++         record = keyline(j)
++         call gettext (record,keyword,next)
++         call upcase (keyword)
++         string = record(next:12000)
++         if (keyword(1:12) .eq. 'POLARIZABLE ') then
++            read (string,*,err=99,end=99)  (list(i),i=nlist+1,n)
++   99       continue
++            do while (list(nlist+1) .ne. 0)
++               nlist = nlist + 1
++               list(nlist) = max(-n,min(n,list(nlist)))
++            end do
++         end if
++      end do
++      i = 1
++      do while (list(i) .ne. 0)
++         if (i .eq. 1) then
++            do j = 1, n
++               douind(j) = .false.
++            end do
++         end if
++         if (list(i) .gt. 0) then
++            j = list(i)
++            if (.not. douind(j)) then
++               douind(j) = .true.
++            end if
++            i = i + 1
++         else
++            do j = abs(list(i)), abs(list(i+1))
++               if (.not. douind(j)) then
++                  douind(j) = .true.
++               end if
++            end do
++            i = i + 2
++         end if
++      end do
++      deallocate (list)
++c
++cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
++c
+@@ -243,6 +304,8 @@
+-         do j = 1, 3
+-            udir(j,i) = polarity(i) * field(j,i)
+-            udirp(j,i) = polarity(i) * fieldp(j,i)
+-            uind(j,i) = udir(j,i)
+-            uinp(j,i) = udirp(j,i)
+-         end do
++         if (douind(ipole(i))) then
++            do j = 1, 3
++               udir(j,i) = polarity(i) * field(j,i)
++               udirp(j,i) = polarity(i) * fieldp(j,i)
++               uind(j,i) = udir(j,i)
++               uinp(j,i) = udirp(j,i)
++            end do
++         end if
+@@ -303,7 +366,14 @@
+-            poli(i) = max(polmin,polarity(i))
+-            do j = 1, 3
+-               rsd(j,i) = (udir(j,i)-uind(j,i))/poli(i)
+-     &                       + field(j,i)
+-               rsdp(j,i) = (udirp(j,i)-uinp(j,i))/poli(i)
+-     &                       + fieldp(j,i)
+-            end do
++            if (douind(ipole(i))) then
++               poli(i) = max(polmin,polarity(i))
++               do j = 1, 3
++                  rsd(j,i) = (udir(j,i)-uind(j,i))/poli(i)
++     &                          + field(j,i)
++                  rsdp(j,i) = (udirp(j,i)-uinp(j,i))/poli(i)
++     &                          + fieldp(j,i)
++               end do
++            else
++               do j = 1, 3
++                  rsd(j,i) = 0.0d0
++                  rsdp(j,i) = 0.0d0
++               end do
++            end if
+@@ -322,4 +392,11 @@
+-            do j = 1, 3
+-               conj(j,i) = zrsd(j,i)
+-               conjp(j,i) = zrsdp(j,i)
+-            end do
++            if (douind(ipole(i))) then
++               do j = 1, 3
++                  conj(j,i) = zrsd(j,i)
++                  conjp(j,i) = zrsdp(j,i)
++               end do
++            else
++               do j = 1, 3
++                  conj(j,i) = 0.0d0
++                  conjp(j,i) = 0.0d0
++               end do
++            end if
+@@ -333,6 +410,15 @@
+-               do j = 1, 3
+-                  vec(j,i) = uind(j,i)
+-                  vecp(j,i) = uinp(j,i)
+-                  uind(j,i) = conj(j,i)
+-                  uinp(j,i) = conjp(j,i)
+-               end do
++               if (douind(ipole(i))) then
++                  do j = 1, 3
++                     vec(j,i) = uind(j,i)
++                     vecp(j,i) = uinp(j,i)
++                     uind(j,i) = conj(j,i)
++                     uinp(j,i) = conjp(j,i)
++                  end do
++               else
++                  do j = 1, 3
++                     vec(j,i) = 0.0d0
++                     vecp(j,i) = 0.0d0
++                     uind(j,i) = 0.0d0
++                     uinp(j,i) = 0.0d0
++                  end do
++               end if
+@@ -348,6 +434,15 @@
+-               do j = 1, 3
+-                  uind(j,i) = vec(j,i)
+-                  uinp(j,i) = vecp(j,i)
+-                  vec(j,i) = conj(j,i)/poli(i) - field(j,i)
+-                  vecp(j,i) = conjp(j,i)/poli(i) - fieldp(j,i)
+-               end do
++               if (douind(ipole(i))) then
++                  do j = 1, 3
++                     uind(j,i) = vec(j,i)
++                     uinp(j,i) = vecp(j,i)
++                     vec(j,i) = conj(j,i)/poli(i) - field(j,i)
++                     vecp(j,i) = conjp(j,i)/poli(i) - fieldp(j,i)
++                  end do
++               else
++                  do j = 1, 3
++                     uind(j,i) = 0.0d0
++                     uinp(j,i) = 0.0d0
++                     vec(j,i) = 0.0d0
++                     vecp(j,i) = 0.0d0
++                  end do
++               end if
+@@ -370,6 +465,15 @@
+-               do j = 1, 3
+-                  uind(j,i) = uind(j,i) + a*conj(j,i)
+-                  uinp(j,i) = uinp(j,i) + ap*conjp(j,i)
+-                  rsd(j,i) = rsd(j,i) - a*vec(j,i)
+-                  rsdp(j,i) = rsdp(j,i) - ap*vecp(j,i)
+-               end do
++               if (douind(ipole(i))) then
++                  do j = 1, 3
++                     uind(j,i) = uind(j,i) + a*conj(j,i)
++                     uinp(j,i) = uinp(j,i) + ap*conjp(j,i)
++                     rsd(j,i) = rsd(j,i) - a*vec(j,i)
++                     rsdp(j,i) = rsdp(j,i) - ap*vecp(j,i)
++                  end do
++               else
++                  do j = 1, 3
++                     uind(j,i) = 0.0d0
++                     uinp(j,i) = 0.0d0
++                     rsd(j,i) = 0.0d0
++                     rsdp(j,i) = 0.0d0
++                  end do
++               end if
+@@ -395,6 +499,13 @@
+-               do j = 1, 3
+-                  conj(j,i) = zrsd(j,i) + b*conj(j,i)
+-                  conjp(j,i) = zrsdp(j,i) + bp*conjp(j,i)
+-                  epsd = epsd + rsd(j,i)*rsd(j,i)
+-                  epsp = epsp + rsdp(j,i)*rsdp(j,i)
+-               end do
++               if (douind(ipole(i))) then
++                  do j = 1, 3
++                     conj(j,i) = zrsd(j,i) + b*conj(j,i)
++                     conjp(j,i) = zrsdp(j,i) + bp*conjp(j,i)
++                     epsd = epsd + rsd(j,i)*rsd(j,i)
++                     epsp = epsp + rsdp(j,i)*rsdp(j,i)
++                  end do
++               else
++                  do j = 1, 3
++                     conj(j,i) = 0.0d0
++                     conjp(j,i) = 0.0d0
++                  end do
++               end if
+@@ -455,0 +567,3 @@
++cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
++      deallocate (douind)
++cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+@@ -513,0 +628 @@
++      real*8, parameter :: same_at_thresh=1D-5
+@@ -594,0 +710,4 @@
++                  if(r .lt. same_at_thresh) then
++                    r = same_at_thresh
++                    r2 = r*r
++                  end if
+@@ -718,0 +838 @@
++                  write(*,*) '@1 ', r2, kk, ii
+@@ -838,0 +959 @@
++      real*8, parameter :: same_at_thresh=1D-5
+@@ -897,0 +1019,4 @@
++                  if(r .lt. same_at_thresh) then
++                    r = same_at_thresh
++                    r2 = r*r
++                  end if
+@@ -987,0 +1113 @@
++                  write(*,*) '@2 ', r2, kk, ii
+@@ -1179,0 +1306 @@
++                  write(*,*) '@3 ', r2, kk, ii
+@@ -1352,0 +1480 @@
++                  write(*,*) '@4 ', r2, kk, ii
+@@ -1879,0 +2008 @@
++                  write(*,*) '@5 ', r2, kk, ii
+@@ -2068,0 +2198 @@
++                  write(*,*) '@6 ', r2, kk, ii
+@@ -2400,0 +2531 @@
++                  write(*,*) '@7 ', r2, kk, ii
+@@ -2827,0 +2959 @@
++                  write(*,*) '@8 ', r2, kk, ii
+@@ -2954,0 +3087 @@
++                  write(*,*) '@9 ', r2, kk, ii
+@@ -3725,0 +3859 @@
++                  write(*,*) '@A ', r2, kk, ii
+@@ -4199,0 +4334 @@
++                  write(*,*) '@B ', r2, kk, ii
+@@ -4866,0 +5002 @@
++                  write(*,*) '@C ', r2, kk, ii
+@@ -5099,0 +5236 @@
++                  write(*,*) '@D ', r2, kk, ii
+@@ -5405,0 +5543 @@
++      real*8, parameter :: same_at_thresh=1D-5
+@@ -5521,0 +5660,4 @@
++                  if(r .lt. same_at_thresh) then
++                    r = same_at_thresh
++                    r2 = r*r
++                  end if
+@@ -5755,0 +5898 @@
++                  write(*,*) '@G ', r2, kk, ii
