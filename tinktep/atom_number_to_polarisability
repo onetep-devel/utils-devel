@@ -1,0 +1,136 @@
+#!/bin/bash
+################################################################################
+# A part of TINKTEP, an interface between ONETEP and TINKER.                   #
+# Jacek Dziedzic, University of Southampton, May-December 2015.                #
+################################################################################
+
+################################################################################
+# *** atom_number_to_polarisability ***
+# Returns the polarisability associated with a type corresponding to a given
+# atom number (index). Polarisabilities of QM atoms are returned as zero, unless
+# the atom number is given as a negative value. In that case the sign is dropped,
+# but QM atom polarisabilities are returned too.
+#
+# Since v1.30 returns the comment extracted from the .prm file too.
+# Strip everything except the first column to get just the polarisability.
+#
+# v1.36
+# Jacek Dziedzic, September-November 2015.
+################################################################################
+# Revision history:
+# v1.10 2015.11.12 -- Correctly skips first line of .xyz file.
+# v1.20 2015.11.12 -- Supports QM atoms too if negative indices given.
+# v1.30 2015.11.12 -- Returns the comments from the .prm file too.
+# v1.32 2016.01.12 -- Supports BBox lines in xyz files.
+# v1.34 2016.01.22 -- Uses xyz_bbox_line.
+# v1.35 2017.02.07 -- Tiny improvement to error message.
+# v1.36 2017.03.27 -- Tiny improvement to error message.
+################################################################################
+
+myname="atom_number_to_polarisability"
+
+#-------------------------------------------------------------------------------
+# Aborts, printing a message and returning an error code.
+#-------------------------------------------------------------------------------
+function error() {
+  echo "!!! $myname: ERROR #$2: $1. Aborting!" >&2
+  exit $2
+}
+#-------------------------------------------------------------------------------
+
+################################################################################
+# Error codes
+################################################################################
+err_improper_invocation=101
+err_unable_to_obtain_type=102
+err_tag_file_unreadable=103
+err_natom_absent_in_tag_file=104
+err_misformatted_tag_file=105
+err_xyz_file_unreadable=106
+err_prm_file_unreadable=107
+err_unable_to_obtain_polarisability=108
+err_bbox=109
+
+################################################################################
+# main()
+################################################################################
+
+if [ $# -ne 4 ]; then
+  error "Improper invocation. Supply four arguments: the name of the xyz file (either the main one or the _qm_mm.xyz), the name of the .tag file, atom number, and the name of the .prm file. Add a minus to the atom number when inquirying about polarisabilities of QM atoms, or else zero will be returned" $err_improper_invocation
+fi
+
+xyzf=$1
+tagf=$2
+natom=$3
+prmf=$4
+
+# Negative atom numbers mean "include QM atoms too". Otherwise zero is returned for QM atoms.
+if [ $natom -lt 0 ]; then
+  let "natom=-natom"
+  return_zero_for_QM=0
+else
+  return_zero_for_QM=1
+fi
+
+# Only if a distinction between QM and MM is to be made do we need to examine the tag file.
+if [ $return_zero_for_QM == 1 ]; then
+
+  # Examine tag file to see if QM or MM atom
+  if [ -r $tagf ]; then
+    QM_or_MM=`cat $tagf | awk -v natom=$natom '{
+      for(i=1;i<=NF;++i) {
+        if($i == natom) {
+          print NR;
+        }
+      }
+    }'`
+    # Atom absent in tag file
+    if [ -z "$QM_or_MM" ]; then
+      error "Atom number $natom not found in either the QM region or the MM region, according to $tagf" $err_natom_absent_in_tag_file
+    fi
+    # Atom is neither MM, nor QM, misformatted tag file.
+    if [ $QM_or_MM -gt 2 ]; then
+      error "Misformatted tag file $tagf" $err_misformatted_tag_file
+    fi
+    # Atom is QM
+    if [ $QM_or_MM == 1 ]; then
+      if [ $return_zero_for_QM == 1 ]; then
+        echo "0"
+        exit
+      fi
+    fi
+    # Continue if atom is MM, or if is QM and QM are to be included
+  else
+    error "Tag file '$tagf' does not exist or is unreadable" $err_tag_file_unreadable
+  fi
+
+fi
+
+# Sanity check on the presence of the input xyz file
+if [ ! -r "$xyzf" ]; then
+  error "Xyz file '$xyzf' does not exist or is unreadable" $err_xyz_file_unreadable
+fi
+
+# See if there's a BBox line in the xyz file -- it will contain no alphanumeric characters, except maybe E, e, D or d (1E+02, 1d0, etc).
+bbox_line=`xyz_bbox_line $xyzf` || error "Could not verify the presence of, or parse, the BBox line in the .xyz file $xyzf" $err_bbox
+bbox_line_present=`echo $bbox_line | awk '{print ($4 > 0)}'`
+
+# Obtain the TINKER atom type corresponding to the atom index
+let "firstatomline=2+bbox_line_present"
+ntype=`tail -n +$firstatomline $xyzf | awk -v natom=$natom '{if($1 == natom) print $6}'`
+
+if [ -z "$ntype" ]; then
+  error "Unable to obtain a force field type corresponding to atom index '$natom'. Most likely atom index '$natom' is present in $tagf, but not in $xyzf" $err_unable_to_obtain_type
+fi
+
+# Find the polarisability in the FF file
+if [ -r "$prmf" ]; then
+  polarisability=`cat $prmf | awk -v ntype=$ntype '{if($1 == "polarize" && $2==ntype) print $3}'`
+  if [ -z "$polarisability" ]; then
+    error "Unable to obtain the polarisability of atom type $ntype deemed to correspond to atom index $natom. Perhaps you are using a fixed-charge force field, but insist on Thole damping? Check tinktep.config" $err_unable_to_obtain_polarisability
+  fi
+  comment=`cat $prmf | awk -v ntype=$ntype '{if($1 == "atom" && $2 == ntype) print $0}' | sed -e "s/.* \"/\! /" -e "s/\".*//"`
+  echo $polarisability $comment
+else
+  error "FF param file '$prmf' does not exist or is unreadable" $err_prm_file_unreadable
+fi

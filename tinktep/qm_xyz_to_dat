@@ -1,0 +1,668 @@
+#!/bin/bash
+################################################################################
+# A part of TINKTEP, an interface between ONETEP and TINKER.                   #
+# Jacek Dziedzic, University of Southampton, May-December 2015.                #
+################################################################################
+
+################################################################################
+# *** qm_xyz_to_dat ***
+# Converts a QM TINKER-style .xyz file to a ONETEP .dat input file.
+#
+# v1.64
+# Jacek Dziedzic, May-November 2015.
+################################################################################
+# Revision history:
+# v1.05 2015.06.03 -- Supports fractional box sizes
+# v1.10 2015.08.14 -- Config file, coord_xlat 
+# v1.15 2015.11.12 -- Error codes
+# v1.25 2015.11.12 -- Extracts Thole polarisabilities
+# v1.30 2015.11.13 -- Uses a0^3 for polarisability units
+# v1.32 2015.11.17 -- Only does Thole polarisabilities if qm_thole_polarisability 
+#                     specified
+# v1.35 2016.01.12 -- Supports BBox lines in .xyz files.
+# v1.40 2016.01.12 -- Generates a %block lattice_cart if a BBox line was present
+#                     in the .xyz file.
+# v1.45 2016.01.12 -- Wraps atoms back to ONETEP's box if a BBox line was present
+#                     in the .xyz file.
+# v1.46 2016.01.12 -- Automatically pastes pol_emb_pot_filename.
+# v1.50 2016.01.13 -- Option to generate classical atoms (sparkles).
+# v1.51 2016.01.14 -- Bugfix in handling BBoxes.
+# v1.52 2016.01.20 -- Combination of classical atoms and no BBox line works.
+# v1.54 2016.01.20 -- 'pure_qm' added as an option.
+# v1.56 2016.01.22 -- Uses xyz_bbox_line.
+# v1.57 2016.04.18 -- Fixed missing parentheses in MM bbox line check.
+# v1.58 2016.04.28 -- Supports mm_fixed_charge.
+# v1.59 2016.05.06 -- Automatically pastes pol_emb_thole_a if needed.
+# v1.60 2016.05.06 -- Bugfix for the above.
+# v1.61 2016.10.28 -- Trailing spaces stripped from jobname.
+# v1.63 2017.09.21 -- Automatically pastes pol_emb_polscal if needed.
+# v1.64 2017.09.21 -- Renaming of keywords to 'qm_mm_polscal', 'qm_mm_thole_a'.
+################################################################################
+
+myname="qm_xyz_to_dat"
+configfile="tinktep.config"
+bohr_to_ang=0.52917721092 # now consistent with bohr2ang elsewhere and in TINKER
+
+#-------------------------------------------------------------------------------
+# Aborts, printing a message and returning an error code.
+#-------------------------------------------------------------------------------
+function error() {
+  echo "!!! $myname: ERROR #$2: $1. Aborting!" >&2
+  exit $2
+}
+#-------------------------------------------------------------------------------
+
+################################################################################
+# Error codes
+################################################################################
+err_config_file_coord_xlat=101
+err_improper_invocation=102
+err_key_file_unreadable=103
+err_key_missing_parameters=104
+err_ff_param_file_unreadable=105
+err_xyz_file_unreadable=106
+err_template_file_unreadable=107
+err_xyz_file_incorrect_extension=108
+err_dat_file_already_exists=109
+err_coord_xlat_file_already_exists=110
+err_block_lattice_cart_missing=111
+err_endblock_lattice_cart_missing=112
+err_malformed_lattice_cart_block=113
+err_failed_to_obtain_box_x=114
+err_illegal_box_x=115
+err_failed_to_obtain_box_y=116
+err_illegal_box_y=117
+err_failed_to_obtain_box_z=118
+err_illegal_box_z=119
+err_failed_to_find_bbox_centre=120
+err_failed_to_find_disp_vec=121
+err_failed_to_copy_template_to_dat=122
+err_failed_to_paste_positions_into_dat=123
+err_failed_to_obtain_qm_polarisability=124
+err_block_lattice_cart_unexpected=125
+err_mm_xyz_file_unreadable=126
+err_failed_to_paste_positions_into_dat_as_sparkles=127
+err_bbox_presence_inconsistent=128
+err_bbox_inconsistent=129
+err_bbox_qm_file=130
+err_bbox_mm_file=131
+err_config_file_directive_qm_mm_thole_a=132
+err_config_file_directive_qm_mm_polscal=133
+
+#-------------------------------------------------------------------------------
+# Parses the config file
+#-------------------------------------------------------------------------------
+function parse_config() {
+  if [ ! -r $configfile ]; then
+    error "Cannot read $configfile" $err_config_file
+  fi
+
+  if [ `cat $configfile | tr "\t" " " | sed -r "s/ +/ /g" | grep -Ec "^jobname"` != 1 ]; then
+    error "Setting 'jobname' is not defined, or is defined multiply, in $configfile" $err_config_file_directive_jobname
+  fi
+  opt_jobname=`cat $configfile | tr "\t" " " | sed -r "s/ +/ /g" | grep -E "^jobname" | sed "s/jobname //" | sed "s/ *//g"`
+  echo "    (jobname: $opt_jobname)"
+
+  if [ `cat $configfile | tr "\t" " " | sed -r "s/ +/ /g" | grep -Ec "^coord_xlat"` -gt 1 ]; then
+    error "Setting 'coord_xlat' is defined multiply, in $configfile" $err_config_file_coord_xlat
+  fi
+  opt_coord_xlat=`cat $configfile | tr "\t" " " | sed -r "s/ +/ /g" | grep -E "^coord_xlat" | sed "s/coord_xlat //"`
+  if [ -z "$opt_coord_xlat" ]; then
+    echo "    (coord_xlat: AUTOMATIC CENTERING IN ONETEP CELL)"
+  else
+    echo "    (coord_xlat: $opt_coord_xlat)"
+  fi
+
+  opt_qm_thole_polarisability=`cat $configfile | tr "\t" " " | sed -r "s/ +/ /g" | grep -Ec "^qm_thole_polari[sz]ability" | awk '{if($1>0) print "1"; else print "0";}'`
+  if [ $opt_qm_thole_polarisability == "1" ]; then
+    echo "    (QM Thole polarisability)"
+  else
+    echo "    (NO QM Thole polarisability)"
+  fi
+
+  opt_mm_fixed_charge=`cat $configfile | tr "\t" " " | sed -r "s/ +/ /g" | grep -Ec "^mm_fixed_charge" | awk '{if($1>0) print "1"; else print "0";}'`
+  if [ $opt_mm_fixed_charge == "1" ]; then
+    echo "    (MM uses a fixed-charge force-field)"
+  else
+    echo "    (MM uses a polarisable force-field)"
+  fi
+
+  opt_classical_atoms=`cat $configfile | tr "\t" " " | sed -r "s/ +/ /g" | grep -Ec "^classical_atoms" | awk '{if($1>0) print "1"; else print "0";}'`
+  if [ $opt_classical_atoms == "1" ]; then
+    echo "    (Classical atoms (sparkles) will be generated)"
+  fi
+
+  opt_pure_qm=`cat $configfile | tr "\t" " " | sed -r "s/ +/ /g" | grep -Ec "^pure_qm" | awk '{if($1>0) print "1"; else print "0";}'`
+  if [ $opt_pure_qm == "1" ]; then
+    echo "    (A purely QM run -- pol_emb functionality in ONETEP will not be invoked)"
+  fi
+
+  if [ `cat $configfile | tr "\t" " " | sed -r "s/ +/ /g" | grep -Ec "^qm_mm_thole_a"` -gt 1 ]; then
+    error "Setting 'qm_mm_thole_a' is defined multiply, in $configfile" $err_config_file_directive_qm_mm_thole_a
+  fi
+  opt_qm_mm_thole_a=`cat $configfile | tr "\t" " " | sed -r "s/ +/ /g" | grep -E "^qm_mm_thole_a" | sed "s/qm_mm_thole_a //"`
+  if [ -z $opt_qm_mm_thole_a ]; then
+    opt_qm_mm_thole_a="-1"
+  else
+    echo "    (QM/MM Thole parameter 'a' overridden to: $opt_qm_mm_thole_a)"
+  fi
+
+  if [ `cat $configfile | tr "\t" " " | sed -r "s/ +/ /g" | grep -Ec "^qm_mm_polscal"` -gt 1 ]; then
+    error "Setting 'qm_mm_polscal' is defined multiply, in $configfile" $err_config_file_directive_qm_mm_polscal
+  fi
+  opt_qm_mm_polscal=`cat $configfile | tr "\t" " " | sed -r "s/ +/ /g" | grep -E "^qm_mm_polscal" | sed "s/qm_mm_polscal //"`
+  if [ -z $opt_qm_mm_polscal ]; then
+    opt_qm_mm_polscal="-1"
+  else
+    echo "    (QM/MM QM-side polarisabilities scaled by: $opt_qm_mm_polscal)"
+  fi
+
+}
+#-------------------------------------------------------------------------------
+
+
+################################################################################
+# main()
+################################################################################
+
+rm -f "error_message"
+
+parse_config
+
+padding=`echo $myname | sed "s/./ /g"`" "
+
+if [ $# -ne 2 ]; then
+  error "Improper invocation. Supply a TINKER QM .xyz filename and a ONETEP .dat.template filename" $err_improper_invocation
+fi
+
+# Obtain the name of the FF param file and ensure it exists
+if [ ! -r "$opt_jobname.key" ]; then
+  error "The key file $opt_jobname.key does not exist or is unreadable" $err_key_file_unreadable
+fi
+FFparamfile=`cat $opt_jobname.key | tr "\t" " " | sed -r "s/ +/ /g" | grep "parameters" | sed "s/parameters //"`".prm"
+if [ -z "$FFparamfile" ]; then
+  error "The directive 'parameters' is missing in TINKER key file $opt_jobname.key" $err_key_missing_parameters
+fi
+if [ ! -r "$FFparamfile" ]; then
+  error "The force-field parameter file '$FFparamfile' does not exist or is unreadable" $err_ff_param_file_unreadable
+fi
+
+# Ensure xyz input file exists
+xyzf=$1
+echo "*** $myname: Input QM .xyz file:      $xyzf."
+if [ ! -r $xyzf ]; then
+  error "$xyzf does not exist or is not readable" $err_xyz_file_unreadable
+fi
+
+# Ensure dat template input file exists
+templatef=$2
+echo "    $padding Input dat template file: $templatef."
+if [ ! -r $templatef ]; then
+  error "$templatef does not exist or is not readable" $err_template_file_unreadable
+fi
+
+# Extract last four characters of input filename
+xyzf_ext=`echo $xyzf | sed -r "s/.*(....)$/\1/"`
+
+# Ensure they are as expected, for a safe replace later in determining
+# the output filenames.
+if [ "$xyzf_ext" != ".xyz" ]; then
+  error "The extension of the input TINKER xyz file should be '.xyz'" $err_xyz_file_incorrect_extension
+fi
+
+# Infer the name of the input MM xyz file, if generating sparkles
+if [ "$opt_classical_atoms" == "1" ]; then
+  mm_xyzf=`echo $xyzf | sed -r "s/_qm\.xyz/_mm.xyz/"`
+  echo "    $padding Input MM .xyz file:      $xyzf (for generating classical atoms)."
+  if [ ! -r $mm_xyzf ]; then
+    error "$mm_xyzf does not exist or is not readable" $err_mm_xyz_file_unreadable
+  fi
+fi
+
+# Infer the name of the output .dat file
+datf=`echo $xyzf | sed -r "s/\.xyz/_mm.dat/"`
+
+# Ensure it's fine
+echo "    $padding Output .dat file:        $datf."
+if [ -r $datf ]; then
+  error "$datf (inferred from $xyzf) already exists, I'm afraid to overwrite it" $err_dat_file_already_exists
+fi
+
+# Infer the name of the output .coord_translation
+coordtranslationf=`echo $xyzf | sed -r "s/_qm\.xyz/.coord_translation/"`
+
+# Ensure it's fine
+echo "    $padding Coord translation file:  $coordtranslationf."
+if [ -r $coordtranslationf ]; then
+  error "$coordtranslationf (inferred from $xyzf) already exists, I'm afraid to overwrite it" $err_coord_xlat_file_already_exists
+fi
+
+# See if there's a BBox line in the QM xyz file -- it will contain no alphanumeric characters, except maybe E, e, D or d (1E+02, 1d0, etc).
+qm_bbox_line=`xyz_bbox_line $xyzf` || error "Could not verify the presence of, or parse, the BBox line in the QM .xyz file $xyzf" $err_bbox_qm_file
+qm_bbox_line_present=`echo $qm_bbox_line | awk '{print ($4 > 0)}'`
+
+echo "    $padding Box dimensions present in $xyzf? "`echo $qm_bbox_line | awk '{print $4}' | sed -e "s/2/Yes (cuboid)./" -e "s/1/Yes (cubic)./" -e "s/0/No./"`
+let "qm_firstatomline=2+qm_bbox_line_present"
+
+if [ "$opt_classical_atoms" == "1" ]; then
+  # See if there's a BBox line in the MM xyz file -- it will contain no alphanumeric characters, except maybe E, e, D or d (1E+02, 1d0, etc).
+  mm_bbox_line=`xyz_bbox_line $mm_xyzf` || error "Could not verify the presence of, or parse, the BBox line in the MM .xyz file $mm_xyzf" $err_bbox_mm_file
+  mm_bbox_line_present=`echo $mm_bbox_line | awk '{print ($4 > 0)}'`
+
+  echo "    $padding Box dimensions present in $mm_xyzf? "`echo $mm_bbox_line | awk '{print $4}' | sed -e "s/2/Yes (cuboid)./" -e "s/1/Yes (cubic)./" -e "s/0/No./"`
+  let "mm_firstatomline=2+mm_bbox_line_present"
+
+  if [ "$qm_bbox_line_present" != "$mm_bbox_line_present" ]; then
+    error "Box dimensions must either be present in both $xyzf and $mm_xyzf or in neither" $err_bbox_presence_inconsistent
+  fi
+
+  # Ensure the BBox line, if present, matches between the QM and MM .xyz files
+  if [ "$mm_bbox_line_present" == "1" ]; then
+    if [ "$qm_bbox_line" != "$mm_bbox_line" ]; then
+      error "Box dimensions are inconsistent between $xyzf and $mm_xyzf. They should match to every character" $err_bbox_inconsistent
+    fi
+  fi
+fi
+
+# Copy the template to the output .dat file
+cp -a $templatef $datf
+result=$?
+if [ $result -ne 0 ]; then
+  error "Failed to copy $templatef to $datf" $err_failed_to_copy_template_to_dat
+fi
+
+# Paste the 'pol_emb_pot_filename' directive into the output .dat file
+# ... but only if not using classical atoms, as these are incompatible.
+# ... and if 'pure_qm' is not specified, as then we don't want to trigger polarisable embedding functionality in ONETEP.
+if [ "$opt_classical_atoms" == "0" ] && [ "$opt_pure_qm" == "0" ]; then
+  echo -e "\npol_emb_pot_filename "`echo $xyzf | sed -r "s/\_qm.xyz/_mm.mpoles_for_onetep/"` >>$datf
+fi
+
+# If MM uses fixed charges, let ONETEP know, so that it will act accordingly
+# (e.g. not look for the Thole polarisability block).
+if [ "$opt_mm_fixed_charge" == "1" ]; then
+  echo "pol_emb_fixed_charge T" >>$datf
+fi
+
+# If config file specifies Thole a, add the right directive to the .dat file to avoid
+# a discrepancy between key_process and ONETEP.
+if [ "$opt_qm_mm_thole_a" != "-1" ]; then
+  echo "pol_emb_thole_a $opt_qm_mm_thole_a" >>$datf
+fi
+
+# If config file specifies polscal, add the right directive to the .dat file to avoid
+# a discrepancy between TINKER and ONETEP. This is because TINKER uses data from key_process,
+# while ONETEP uses data from the .dat file.
+if [ "$opt_qm_mm_polscal" != "-1" ]; then
+  echo "pol_emb_polscal $opt_qm_mm_polscal" >>$datf
+fi
+
+if [ "$qm_bbox_line_present" == "0" ]; then
+  # *******************************************************************************************
+  # If there is no BBox line in the QM xyz file, use the box sizes defined by %block lattice_cart.
+  # *******************************************************************************************
+
+  # Locate block lattice_cart in the template file
+  startline=`cat $templatef | grep -n "%block lattice_cart" | tr ":" " " | awk '{print $1}'`
+  if [ -z "$startline" ]; then
+    error "Cannot locate '%block lattice_cart' in $templatef. It must be present, unless you have a box dimensions line in the .xyz file" $err_block_lattice_cart_missing
+  fi
+  endline=`cat $templatef | grep -n "%endblock lattice_cart" | tr ":" " " | awk '{print $1}'`
+  if [ -z "$endline" ]; then
+    error "Cannot locate '%endblock lattice_cart' in $templatef. It must be present, unless you have a box dimensions line in the .xyz file" $err_endblock_lattice_cart_missing
+  fi
+  let "nlines=endline-startline-1"
+  if [ "$nlines" != "3" ]; then
+    error "Expected the contents of '%block lattice_cart' in $templatef to be three lines, got $nlines. Either you are trying to use 'ang', which is not supported, or $templatef is malformed" $err_malformed_lattice_cart_block
+  fi
+
+  # Infer box size along X from the template file
+  echo "Unrecognized error" >"error_message"
+  boxx=`cat $templatef | awk -v startline=$startline -v endline=$endline '
+  {
+    if(NR==startline+1) {
+      boxx=$1;
+      if($2 != 0.0 || $3 != 0.0) {
+        printf("Non-cuboid ONETEP boxes are not supported") >"error_message"
+        exit 11;
+      }
+    }
+  }
+  END {
+    printf("%.9f",boxx);
+  }
+  '`
+  result=$?
+  if [ $result -ne 0 ]; then
+    errmsg=`cat error_message`
+    error "(code $result) Failed to obtain ONETEP box size along X from $templatef: $errmsg" $err_failed_to_obtain_box_x
+  else
+    rm -f "error_message"
+  fi
+  if [ `echo $boxx | awk '{print $1+0}'` == "0" ]; then
+    error "Zero or non-numerical box size along X obtained from $templatef" $err_illegal_box_x
+  fi
+
+  # Infer box size along Y from the template file
+  echo "Unrecognized error" >"error_message"
+  boxy=`cat $templatef | awk -v startline=$startline -v endline=$endline '
+  {
+    if(NR==startline+2) {
+      boxy=$2;
+      if($1 != 0.0 || $3 != 0.0) {
+        printf("Non-cuboid ONETEP boxes are not supported") >"error_message"
+        exit 11;
+      }
+    }
+  }
+  END {
+    printf("%.9f",boxy);
+  }
+  '`
+  result=$?
+  if [ $result -ne 0 ]; then
+    errmsg=`cat error_message`
+    error "(code $result) Failed to obtain ONETEP box size along Y from $templatef: $errmsg" $err_failed_to_obtain_box_y
+  else
+    rm -f "error_message"
+  fi
+  if [ `echo $boxy | awk '{print $1+0}'` == "0" ]; then
+    error "Zero or non-numerical box size along Y obtained from $templatef" $err_illegal_box_y
+  fi
+
+  # Infer box size along Z from the template file
+  echo "Unrecognized error" >"error_message"
+  boxz=`cat $templatef | awk -v startline=$startline -v endline=$endline '
+  {
+    if(NR==startline+3) {
+      boxz=$3;
+      if($1 != 0.0 || $2 != 0.0) {
+        printf("Non-cuboid ONETEP boxes are not supported") >"error_message"
+        exit 11;
+      }
+    }
+  }
+  END {
+    printf("%.9f",boxz);
+  }
+  '`
+  result=$?
+  if [ $result -ne 0 ]; then
+    errmsg=`cat error_message`
+    error "(code $result) Failed to obtain ONETEP box size along Z from $templatef: $errmsg" $err_failed_to_obtain_box_z
+  else
+    rm -f "error_message"
+  fi
+  if [ `echo $boxz | awk '{print $1+0}'` == "0" ]; then
+    error "Zero or non-numerical box size along Z obtained from $templatef" $err_illegal_box_z
+  fi
+
+  echo "$padding     ONETEP box size [bohr]:  $boxx $boxy $boxz (from template file)."
+else
+  # *******************************************************************************************
+  # If there is a BBox line in the QM xyz file, use it to generate %block_lattice_cart
+  # *******************************************************************************************
+
+  # Ensure there is *no* lattice_cart block in the template file
+  nlatticecarts=`cat $templatef | grep -c "%block lattice_cart"`
+  if [ $nlatticecarts -gt 0 ]; then
+    error "Found a '%block lattice_cart' in $templatef. It cannot be present if you have a box dimensions line in the .xyz file. If the %block is in a comment, forgive me, I'm a crude script" $err_block_lattice_cart_unexpected
+  fi
+
+  echo -e "\n! Box dimensions obtained from $xyzf." >>$datf
+  echo "%block lattice_cart" >>$datf
+  boxx=`head -n 2 $xyzf | tail -n 1 | awk -v conv=$bohr_to_ang '{printf("%17.9f",$1/conv)}'`
+  boxy=`head -n 2 $xyzf | tail -n 1 | awk -v conv=$bohr_to_ang '{printf("%17.9f",$2/conv)}'`
+  boxz=`head -n 2 $xyzf | tail -n 1 | awk -v conv=$bohr_to_ang '{printf("%17.9f",$3/conv)}'`
+  echo $boxx | awk '{printf("%17.9f %17.9f %17.9f\n",$1,0.0,0.0)}' >>$datf
+  echo $boxy | awk '{printf("%17.9f %17.9f %17.9f\n",0.0,$1,0.0)}' >>$datf
+  echo $boxz | awk '{printf("%17.9f %17.9f %17.9f\n",0.0,0.0,$1)}' >>$datf
+  echo "%endblock lattice_cart" >>$datf
+
+  echo "$padding     ONETEP box size [bohr]:  $boxx $boxy $boxz (inferred from $xyzf's BBox line)."
+fi
+
+# Calculate the centre of the bounding box of the QM xyz file in preparation for translation
+echo "Unrecognized error" >"error_message"
+xyzcentre=`cat $xyzf | tail -n +$qm_firstatomline | awk -v unitconv=$bohr_to_ang '
+BEGIN {
+  minx=999999999;
+  miny=999999999;
+  minz=999999999;
+  maxx=-999999999;
+  maxy=-999999999;
+  maxz=-999999999;
+}
+{
+  if($3 < minx) minx=$3;
+  if($3 > maxx) maxx=$3;
+  if($4 < miny) miny=$4;
+  if($4 > maxy) maxy=$4;
+  if($5 < minz) minz=$5;
+  if($5 > maxz) maxz=$5;
+}
+END {
+  printf("%17.9f %17.9f %17.9f",(maxx+minx)*0.5/unitconv, (maxy+miny)*0.5/unitconv, (maxz+minz)*0.5/unitconv);
+}
+'`
+result=$?
+if [ $result -ne 0 ]; then
+  errmsg=`cat error_message`
+  error "(code $result) Failed to calculate bounding box centre of molecule in $xyzf: $errmsg" $err_failed_to_find_bbox_centre
+else
+  rm -f "error_message"
+fi
+echo "$padding     QM .xyz centre [bohr]:   $xyzcentre."
+
+# Calculate the displacement vector by which to move QM .xyz atoms to put them in the centre of ONETEP box
+if [ -z "$opt_coord_xlat" ]; then
+  echo "Unrecognized error" >"error_message"
+  disps=`echo $boxx $boxy $boxz $xyzcentre | awk '{
+    if(NF != 6) {
+      printf("Expected two sets of XYZ coordinates") >"error_message";
+      exit 11;
+    }
+    boxx=$1;
+    boxy=$2;
+    boxz=$3;
+    x0=$4;
+    y0=$5;
+    z0=$6;
+    dispx=boxx/2-x0;
+    dispy=boxy/2-y0;
+    dispz=boxz/2-z0;
+    printf("%.9f %.9f %.9f",dispx,dispy,dispz);
+  }'`
+  result=$?
+  if [ $result -ne 0 ]; then
+    errmsg=`cat error_message`
+    error "(code $result) Failed to determine displacement vector for atoms in $xyzf, using box dimensions from $templatef: $errmsg" $err_failed_to_find_disp_vec
+  else
+    rm -f "error_message"
+  fi
+else
+  # ... or use user-defined override
+  disps=$opt_coord_xlat
+fi
+echo "$padding     Displacement vec [bohr]: $disps"
+echo $disps >$coordtranslationf
+
+# ---------------------------------------
+# --- QM atoms -> %block lattice_cart ---
+# ---------------------------------------
+
+# Paste a comment and a positions block header into the output .dat file
+date=`date`
+echo -e "\n! Positions obtained from $xyzf, translated to the centre of $templatef" >>$datf
+echo -e "! by $myname on $date. Translation vector [a0]: $disps.\n" >>$datf
+echo "%block positions_abs" >>$datf
+
+# Paste the actual coordinates from the .xyz file, shifted appropriately
+# Wrap back to ONETEP box if lattice cart block was determined from the BBox line,
+# assuming we want periodicity in that case.
+echo "Unrecognized error" >"error_message"
+cat $xyzf | tail -n +$qm_firstatomline | awk -v disps="$disps" -v unitconv=$bohr_to_ang -v bbox_line_present="$qm_bbox_line_present" -v boxx="$boxx" -v boxy="$boxy" -v boxz="$boxz" '
+BEGIN {
+  ndisps=split(disps,disps_arr," ");
+  if(ndisps != 3) {
+    print("Mismatched number of displacements") >"error_message";
+    exit 11;
+  }
+}
+{
+  x=$3/unitconv+disps_arr[1];
+  y=$4/unitconv+disps_arr[2];
+  z=$5/unitconv+disps_arr[3];
+  if(bbox_line_present) {
+    if(x<0) x+=boxx;
+    if(y<0) y+=boxy;
+    if(z<0) z+=boxz;
+    if(x>boxx) x-=boxx;
+    if(x>boxy) y-=boxy;
+    if(x>boxz) z-=boxz;
+
+    if(x<0 || y<0 || z<0 || x>boxx || y>boxy || z>boxz) {
+      print("Could not wrap a stray atom back to the box, it must have strayed by more than one box length") >"error_message";
+      exit 12;
+    }
+
+  }
+  printf("%-4s %16.9f %16.9f %16.9f\n",$2,x,y,z);
+}' >>$datf
+result=$?
+if [ $result -ne 0 ]; then
+  errmsg=`cat error_message`
+  error "(code $result) Failed to paste translated positions from $xyzf into $datf: $errmsg" $err_failed_to_paste_positions_into_dat
+else
+  rm -f "error_message"
+fi
+
+# Paste a positions block trailer
+echo "%endblock positions_abs" >>$datf
+
+# -------------------------------------------------------
+# --- MM atoms -> %block classical_info (if desired)  ---
+# -------------------------------------------------------
+
+if [ "$opt_classical_atoms" == "1" ]; then
+
+  # Handle the special case of 0 MM atoms first, to avoid an empty block in the .dat file.
+  n_mm_atoms=`head -n 1 $mm_xyzf | awk '{printf("%d",$1)}'`
+  if [ "$n_mm_atoms" == "0" ]; then
+    echo -e "\n! There were zero MM atoms in $mm_xyzf. Not generating a classical_info block." >>$datf
+  else
+    # Obtain the mapping between classical species and charges, by examining
+    # the template file.
+    cat $templatef | tr "\t" " " | sed -r "s/ +/ /g" | grep "classical_species_charge" | awk '{printf("%s ",$3)}' >classical_species
+    cat $templatef | tr "\t" " " | sed -r "s/ +/ /g" | grep "classical_species_charge" | awk '{printf("%s ",$4)}' >classical_charges
+
+    # Paste a comment and a positions block header into the output .dat file
+    date=`date`
+    echo -e "\n! Classical atom positions obtained from $mm_xyzf, translated to the centre of $templatef" >>$datf
+    echo -e "! by $myname on $date. Translation vector [a0]: $disps.\n" >>$datf
+    echo "%block classical_info" >>$datf
+
+    # Paste the actual coordinates from the .xyz file, shifted appropriately
+    # Wrap back to ONETEP box if lattice cart block was determined from the BBox line,
+    # assuming we want periodicity in that case.
+    # NB: The displacements and shifts have been taken from the QM file, as we must be
+    #     consistent between QM and sparkles. BBox lines have been verified to be identical.
+    # The charges are read from 'classical_species' and 'classical_charges'.
+    echo "Unrecognized error" >"error_message"
+    cat $mm_xyzf | tail -n +$mm_firstatomline | awk -v disps="$disps" -v unitconv=$bohr_to_ang -v bbox_line_present="$mm_bbox_line_present" -v boxx="$boxx" -v boxy="$boxy" -v boxz="$boxz" '
+    BEGIN {
+      ndisps=split(disps,disps_arr," ");
+      if(ndisps != 3) {
+        print("Mismatched number of displacements") >"error_message";
+        exit 11;
+      }
+      getline classical_species <"classical_species";
+      getline classical_charges <"classical_charges";
+      n_classical_species=split(classical_species,classical_species_arr," ");
+      n_classical_charges=split(classical_charges,classical_charges_arr," ");
+      if(n_classical_species != n_classical_charges) {
+        print("Mismatch between the number of classical species and classical charges. Check the '\''!$ classical_species_charge'\'' lines in your dat.template file") >"error_message";
+        exit 13;
+      }
+      for(i=1;i<=n_classical_species;++i) {
+        species_to_charges[classical_species_arr[i]]=classical_charges_arr[i];
+      }
+    }
+    {
+      species=$2;
+      x=$3/unitconv+disps_arr[1];
+      y=$4/unitconv+disps_arr[2];
+      z=$5/unitconv+disps_arr[3];
+      if(bbox_line_present) {
+        if(x<0) x+=boxx;
+        if(y<0) y+=boxy;
+        if(z<0) z+=boxz;
+        if(x>boxx) x-=boxx;
+        if(x>boxy) y-=boxy;
+        if(x>boxz) z-=boxz;
+
+        if(x<0 || y<0 || z<0 || x>boxx || y>boxy || z>boxz) {
+          print("Could not wrap a stray classical atom back to the box, it must have strayed by more than one box length") >"error_message";
+          exit 12;
+        }
+
+      }
+      charge=species_to_charges[species];
+      if(charge == "") {
+        printf("Classical species '\''%s'\'' has no charge assigned in your dat.template file\n",species) >"error_message";
+        exit 15;
+      }
+      printf("%-4s %16.9f %16.9f %16.9f %10.6f\n",$2,x,y,z,charge);
+    }' >>$datf
+    result=$?
+    if [ $result -ne 0 ]; then
+      errmsg=`cat error_message`
+      error "(code $result) Failed to paste translated positions from $mm_xyzf into $datf (as sparkles): $errmsg" $err_failed_to_paste_positions_into_dat_as_sparkles
+    else
+      rm -f "error_message"
+    fi
+
+    # Paste a positions block trailer
+    echo "%endblock classical_info" >>$datf
+  fi
+fi
+
+# --------------------------------------
+# --- QM atom Thole polarisabilities ---
+# --------------------------------------
+
+if [ $opt_qm_thole_polarisability == "1" ]; then
+  # Paste a comment and a thole_polarisabilities block header into the output .dat file
+  date=`date`
+  echo -e "\n! Thole polarisabilities obtained from $xyzf and $FFparamfile." >>$datf
+  echo -e "! by $myname (with atom_number_to_polarisability doing all the dirty work) on $date." >>$datf
+  echo -e "! They have been converted from A^3 to a0^3.\n"  >>$datf
+  echo "%block thole_polarisabilities" >>$datf
+
+  # Paste the actual polarisabilities
+  echo "Unrecognized error" >"error_message"
+  QM_atom_indices=`tail -n +$qm_firstatomline $xyzf | awk '{print $1}'`
+  QM_atom_names=`tail -n +$qm_firstatomline $xyzf | awk '{print $2}'`
+  ordinal=1
+  for QM_atom in $QM_atom_indices; do
+    QM_polarisability=`atom_number_to_polarisability $xyzf %dummy_tag_file% -$QM_atom $FFparamfile`
+    result=$?
+    if [ $result -ne 0 ]; then
+      errmsg=`cat error_message`
+      error "(code $result) Failed to obtain polarisability for QM atom index '$QM_atom': $errmsg" $err_failed_to_obtain_qm_polarisability
+    else
+      rm -f "error_message"
+    fi
+    # Convert polarisability from A^3 to a0^3
+    QM_polarisability_au=`echo $QM_polarisability | awk -v bohr2ang=$bohr_to_ang '{printf("%16.12f",$1/bohr2ang/bohr2ang/bohr2ang)}'`
+    QM_polarisability_comment=`echo $QM_polarisability | sed "s/^.*\!/\!/"`
+    QM_atom_name=`echo $QM_atom_names | awk -v ordinal=$ordinal '{print $ordinal}'`
+    echo $QM_atom_name $QM_polarisability_au $QM_polarisability_comment >>$datf
+    let "ordinal++"
+  done
+
+  # Paste a thole_polarisabilities block trailer
+  echo "%endblock thole_polarisabilities" >>$datf
+fi
+# ... and we're done
+echo "$padding     SUCCESS."

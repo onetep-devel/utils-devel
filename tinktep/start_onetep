@@ -1,0 +1,174 @@
+#!/bin/bash
+################################################################################
+# A part of TINKTEP, an interface between ONETEP and TINKER.                   #
+# Jacek Dziedzic, University of Southampton, May 2015-February 2017.           #
+################################################################################
+
+################################################################################
+# *** start_onetep ***
+# Creates the IPC FIFOs for synchronisation control and launches ONETEP in the
+# background.
+#
+# v1.06
+###############################################################################
+# Revision history:
+# v0.80 2015.??.?? -- Steps towards FIFO locks.
+# v0.90 2015.??.?? -- config file, support for threads and ranks.
+# v1.01 2015.12.22 -- Cleanup. Reads 'mpirun_executable' from the config file.
+# v1.02 2016.04.11 -- Stores the PID of the started executable for monitoring
+#                     in the watchdog.
+# v1.03 2017.01.24 -- Robust against broken implementations of 'GNU which'.
+# v1.04 2017.03.01 -- 'onetep_args' added.
+# v1.05 2017.03.15 -- 'mpirun_args' added.
+# v1.06 2017.03.22 -- Better feedback on the above.
+###############################################################################
+
+myname="start_onetep"
+configfile="tinktep.config"
+onetep2tinker="\$QM2MM.lock"
+tinker2onetep="\$MM2QM.lock"
+
+#-------------------------------------------------------------------------------
+# Aborts, printing a message and returning an error code.
+#-------------------------------------------------------------------------------
+function error() {
+  echo "!!! $myname: ERROR #$2: $1. Aborting!" >&2
+  exit $2
+}
+#-------------------------------------------------------------------------------
+
+################################################################################
+# Error codes
+################################################################################
+err_config_file=101
+err_improper_invocation=102
+err_onetep_exe_missing=103
+err_outfile_already_exists=104
+err_errfile_already_exists=105
+err_mkfifo_onetep2tinker=106
+err_mkfifo_tinker2onetep=107
+err_starting_onetep=108
+err_config_file_directive_onetep_nranks=109
+err_config_file_directive_onetep_nthreads=110
+err_config_file_directive_onetep_executable=111
+err_config_file_directive_mpirun_executable=112
+err_mpirun_exe_missing=113
+err_which_failed=114
+err_config_file_directive_onetep_args=115
+err_config_file_directive_mpirun_args=116
+
+#-------------------------------------------------------------------------------
+# Parses the config file
+#-------------------------------------------------------------------------------
+function parse_config() {
+  if [ ! -r $configfile ]; then
+    error "Cannot read $configfile" $err_config_file
+  fi
+
+  if [ `cat $configfile | tr "\t" " " | sed -r "s/ +/ /g" | grep -Ec "^onetep_executable"` != 1 ]; then
+    error "Setting 'onetep_executable' is not defined, or is defined multiply, in $configfile" $err_config_file_directive_onetep_executable
+  fi
+  opt_onetep_executable=`cat $configfile | grep -E "^onetep_executable" | sed "s/onetep_executable //"`
+  echo "    (ONETEP executable: $opt_onetep_executable)"
+
+  if [ `cat $configfile | tr "\t" " " | sed -r "s/ +/ /g" | grep -Ec "^onetep_args"` -gt 1 ]; then
+    error "Setting 'onetep_args' is defined multiply, in $configfile" $err_config_file_directive_onetep_args
+  fi
+  opt_onetep_args=`cat $configfile | grep -E "^onetep_args" | sed "s/onetep_args //"`
+  if [ -z "$opt_onetep_args" ]; then
+    echo "    (ONETEP args: [none])"
+  else
+    echo "    (ONETEP args: $opt_onetep_args)"
+  fi
+
+  if [ `cat $configfile | tr "\t" " " | sed -r "s/ +/ /g" | grep -Ec "^mpirn_args"` -gt 1 ]; then
+    error "Setting 'mpirun_args' is defined multiply, in $configfile" $err_config_file_directive_mpirun_args
+  fi
+  opt_mpirun_args=`cat $configfile | grep -E "^mpirun_args" | sed "s/mpirun_args //"`
+  if [ -z "$opt_mpirun_args" ]; then
+    echo "    (mpirun args: [none])"
+  else
+    echo "    (mpirun args: $opt_mpirun_args)"
+  fi
+
+  if [ `cat $configfile | tr "\t" " " | sed -r "s/ +/ /g" | grep -Ec "^mpirun_executable"` != 1 ]; then
+    error "Setting 'mpirun_executable' is not defined, or is defined multiply, in $configfile" $err_config_file_directive_mpirun_executable
+  fi
+  opt_mpirun_executable=`cat $configfile | grep -E "^mpirun_executable" | sed "s/mpirun_executable //"`
+  echo "    (mpirun executable: $opt_mpirun_executable)"
+
+  if [ `cat $configfile | tr "\t" " " | sed -r "s/ +/ /g" | grep -Ec "^onetep_nranks"` != 1 ]; then
+    error "Setting 'onetep_nranks' is not defined, or is defined multiply, in $configfile" $err_config_file_directive_onetep_nranks
+  fi
+  opt_onetep_nranks=`cat $configfile | tr "\t" " " | sed -r "s/ +/ /g" | grep -E "^onetep_nranks" | sed "s/onetep_nranks //"`
+  echo "    (ONETEP number of MPI ranks: $opt_onetep_nranks)"
+
+  if [ `cat $configfile | tr "\t" " " | sed -r "s/ +/ /g" | grep -Ec "^onetep_nthreads"` != 1 ]; then
+    error "Setting 'onetep_nthreads' is not defined, or is defined multiply, in $configfile" $err_config_file_directive_onetep_nthreads
+  fi
+  opt_onetep_nthreads=`cat $configfile | tr "\t" " " | sed -r "s/ +/ /g" | grep -E "^onetep_nthreads" | sed "s/onetep_nthreads //"`
+  echo "    (ONETEP number of OMP threads: $opt_onetep_nthreads)"
+}
+
+################################################################################
+# main()
+################################################################################
+
+rm -f "mpirun_pid"
+
+if [ $# -ne 1 ]; then
+  error "Improper invocation. Supply the ONETEP input .dat file as the only argument" $err_improper_invocation
+fi
+
+echo "*** $myname:"
+
+parse_config
+
+# Ensure ONETEP and mpirun are there.
+which $opt_onetep_executable >/dev/null 
+result=$?
+if [ $result == 1 ]; then
+  error "The file '$opt_onetep_executable' does not exist or is not executable" $err_onetep_exe_missing
+fi
+if [ $result != 0 ]; then
+  error "The 'which' command failed. Sadly, this can happen with some version of 'which' if the directory name is too long (>256 chars, typically)" $err_which_failed
+fi
+which $opt_mpirun_executable >/dev/null 
+result=$?
+if [ $result == 1 ]; then
+  error "The file '$opt_mpirun_executable' does not exist or is not executable" $err_mpirun_exe_missing
+fi
+if [ $result != 0 ]; then
+  error "The 'which' command failed. Sadly, this can happen with some version of 'which' if the directory name is too long (>256 chars, typically)" $err_which_failed
+fi
+
+infile=$1
+outfile=`echo $infile | sed -r "s/\.dat$/.out/"`
+errfile=`echo $infile | sed -r "s/\.dat$/.err/"`
+
+echo "    Input: $infile. Output: $outfile. $opt_onetep_nranks MPI ranks x $opt_onetep_nthreads OMP threads."
+
+if [ -e $outfile ]; then
+  error "$outfile already exists, I'm afraid to overwrite it" $err_outfile_already_exists
+fi
+
+if [ -e $errfile ]; then
+  error "$errfile already exists, I'm afraid to overwrite it" $err_errfile_already_exists
+fi
+
+rm -f $onetep2tinker
+rm -f $tinker2onetep
+mkfifo $onetep2tinker || error "Error in mkfifo $onetep2tinker" $err_mkfifo_onetep2tinker
+mkfifo $tinker2onetep || error "Error in mkfifo $tinker2onetep" $err_mkfifo_tinker2onetep
+
+####################################################################
+export OMP_NUM_THREADS=$opt_onetep_nthreads
+echo "    Executing $opt_mpirun_executable $opt_mpirun_args -np $opt_onetep_nranks $opt_onetep_executable $opt_onetep_args $infile >$outfile 2>$errfile &"
+$opt_mpirun_executable $opt_mpirun_args -np $opt_onetep_nranks $opt_onetep_executable $opt_onetep_args $infile >$outfile 2>$errfile &
+####################################################################
+result=$?
+if [ $result -ne 0 ]; then
+  error "Error starting ONETEP ($opt_onetep_executable) in the background via $opt_mpirun_executable" $err_starting_onetep
+fi
+
+echo $! >"mpirun_pid"

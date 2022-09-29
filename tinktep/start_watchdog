@@ -1,0 +1,171 @@
+#!/bin/bash
+################################################################################
+# A part of TINKTEP, an interface between ONETEP and TINKER.                   #
+# Jacek Dziedzic, University of Southampton, May-December 2015.                #
+################################################################################
+
+################################################################################
+# *** start_watchdog ***
+# Keeps checking if ONETEP died and pings the lock and aims to provide a
+# helpful message, if so.
+#
+# v1.17
+# Jacek Dziedzic, May-December 2015.
+###############################################################################
+# Revision history:
+# v0.01 2015.05.27 -- Initial version
+# v1.01 2015.07.27 -- Shows tail of out file if it contains the error description.
+# v1.10 2015.11.12 -- Examines error message file too, ignores "stack unlimited"
+# v1.11 2015.12.22 -- Error codes
+# v1.12 2016.04.11 -- Uses config file. 'watchdog_unfazed_by_stderr' added.
+# v1.13 2016.04.11 -- Minor revision of how errors are handled.
+# v1.14 2016.04.11 -- Monitors mpirun's PID too.
+# v1.15 2017.03.14 -- Improved logic for ignoring "stack unlimited".
+# v1.16 2017.03.17 -- No error messages when looking for .out file, as it can
+#                     take a while before it appears.
+# v1.17 2017.10.19 -- stderr redirection when catting files that might not be 
+#                     there to prevent spurious writes to err files.
+###############################################################################
+
+configfile="tinktep.config"
+myname="start_watchdog"
+onetep2tinker="\$QM2MM.lock"
+
+#-------------------------------------------------------------------------------
+# Aborts, printing a message and returning an error code.
+#-------------------------------------------------------------------------------
+function error() {
+  echo -e "!!! $myname: ERROR #$2: $1. Aborting!" >&2
+  # Watchdog is started in the background, so examining its return code in the
+  # parent (tinktep) would be tricky. Instead we rely on checking if a file 
+  # called 'error_message' is present. We create this file here.
+  echo -e "!!! $myname: ERROR #$2: $1. Aborting!" >"error_message"
+  exit $2
+}
+#-------------------------------------------------------------------------------
+
+################################################################################
+# Error codes
+################################################################################
+err_improper_invocation=101
+err_onetep_exited_with_error=102
+err_onetep_exited_with_error_2=103
+err_config_file=104
+err_could_not_obtain_pid=105
+err_mpirun_process_gone=106
+
+#-------------------------------------------------------------------------------
+# Parses the config file
+#-------------------------------------------------------------------------------
+function parse_config() {
+  if [ ! -r "$configfile" ]; then
+    error "Cannot read $configfile" $err_config_file
+  fi
+
+  opt_watchdog_unfazed_by_stderr=`cat $configfile | tr "\t" " " | sed -r "s/ +/ /g" | grep -Ec "^watchdog_unfazed_by_stderr" | awk '{if($1>0) print "1"; else print "0";}'`
+  if [ $opt_watchdog_unfazed_by_stderr == "1" ]; then
+    echo "    (Watchdog will be unfazed by stderr)"
+  fi
+}
+
+################################################################################
+# main()
+################################################################################
+rm -f "error_message"
+parse_config
+
+if [ $# -ne 1 ]; then
+  error "Improper invocation. Supply the ONETEP input .dat file as the only argument" $err_improper_invocation
+fi
+
+infile=$1
+outfile=`echo $infile | sed -r "s/\.dat$/.out/"`
+errfile=`echo $infile | sed -r "s/\.dat$/.err/"`
+errmessagefile=`echo $infile | sed -r "s/\.dat$/.error_message/"`
+
+mpirun_pid=`cat "mpirun_pid"`
+
+if [ -z "$mpirun_pid" ]; then
+  pwd=`pwd`
+  error "Could not obtain the PID of the process to monitor. Check permissions in $pwd" $err_could_not_obtain_pid
+fi
+
+if [ $opt_watchdog_unfazed_by_stderr == "0" ]; then
+  echo -n "*** $myname: Watching $errfile and $errmessagefile."
+else
+  echo -n "*** $myname: Watching $errmessagefile, but *not* $errfile."
+fi
+echo " Keeping an eye on PID $mpirun_pid. Will ping $onetep2tinker if triggered."
+
+while [ true ]; do
+  # Look for errors
+  # --- ONETEP's/mpirun's stderr ---
+  if [ -s $errfile ] && [ "$opt_watchdog_unfazed_by_stderr" == "0" ]; then 
+    echo "2" >$onetep2tinker
+    if [ -r "$errmessagefile" ] && [ `cat $errmessagefile 2>/dev/null | grep -c "insufficient"` == 0 ]; then
+      # If there's an error message file -- show it
+      errmsg=`cat $errmessagefile 2>/dev/null`
+      # If the error message says "see output file", show the tail of the output file too
+      if [ `echo $errmsg | grep -c "see output"` -gt 0 ]; then
+        errmsg="$errmsg"`cat $outfile 2>/dev/null | grep -A20 "Problems" | sed "s/Problems/@@--> Problems/" | tr "@" "\n"`
+      fi
+    else
+      # If not (SIGSEGV, SIGKILL, SIGBUS, ...) -- show the gory details of the .err file
+      errmsg=`cat $errfile 2>/dev/null`
+    fi
+    error "ONETEP exited with an error [1]:\n$errmsg\n" $err_onetep_exited_with_error
+    sleep 1 # Helps preventing interleaved outputs
+  fi
+
+  # --- ONETEP's error message file ---
+  if [ -s $errmessagefile ]; then
+    # The error message file may exist, but if this is only the error message about 
+    # insufficient stack size, we should not treat this as an error. This is somewhat tricky,
+    # as we are racing against ONETEP's output to this file. Its contents may change
+    # rapidly, or it may disappear altogether. Increase our chances by waiting a little
+    # and checking again.
+    if [ -s $errmessagefile ] && [ `cat $errmessagefile 2>/dev/null | grep -c "insufficient"` == 0 ]; then
+      echo "2" >$onetep2tinker
+      if [ -r "$errmessagefile" ]; then
+        # If there's an error message file -- show it
+        errmsg=`cat $errmessagefile 2>/dev/null`
+        # If the error message says "see output file", show the tail of the output file too
+        if [ `echo $errmsg | grep -c "see output"` -gt 0 ]; then
+          errmsg="$errmsg"`cat $outfile 2>/dev/null | grep -A20 "Problems" | sed "s/Problems/@@--> Problems/" | tr "@" "\n"`
+        fi
+      else
+        # If not (SIGSEGV, SIGKILL, SIGBUS, ...) -- show the gory details of the .err file
+        errmsg=`cat $errfile 2>/dev/null`
+      fi
+      error "ONETEP exited with an error [2]:\n$errmsg\n" $err_onetep_exited_with_error_2
+      sleep 1 # Helps preventing interleaved outputs
+    fi
+  fi
+
+  # Look for successful completion
+  completed=`tail $outfile 2>/dev/null | grep -c "Job completed"`
+  if [ $completed == 1 ]; then
+    echo 
+    echo "%%%%%%%%%%%%%%%%%%%%%%%%%%"
+    echo "%%%  ONETEP completed  %%%"
+    echo "%%%%%%%%%%%%%%%%%%%%%%%%%%"
+    echo
+    echo "3" >$onetep2tinker
+    exit
+  fi
+
+  # Look for errors
+  # --- mpirun process no longer there ---
+  # (this traps scenarios like missing restart files, where the Fortran runtime decides to terminate
+  # ONETEP, and utils_abort() is never called. Or termination through BLACS. These normally write
+  # to stderr, but if the user uses "watchdog_unfazed_by_stderr" we'd miss this and wait forever).
+  # It's not foolproof, as it races against the check for successful completion done above, but
+  # should be good enough.
+  mpirun_process_gone=`kill -0 $mpirun_pid; echo $?`
+  if [ $mpirun_process_gone != "0" ]; then
+    echo "2" >$onetep2tinker
+    error "PID $mpirun_pid is no longer there, which makes me think ONETEP died silently (eg. euthanised by the Fortran RTL), or never ran in the first place" $err_mpirun_process_gone
+  fi
+
+  sleep 1
+done

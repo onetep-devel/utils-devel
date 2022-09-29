@@ -1,0 +1,8 @@
+--- /home/jd12g09/install/tinker713_original/tinker/source/edipole3.f	2015-05-08 21:57:53.000000000 +0100
++++ /home/jd12g09/install/tinker70/source/patched/edipole3.f	2016-01-14 14:11:58.000000000 +0000
+@@ -167 +167 @@
+-   20                format (' Dipole',4x,4(i7,'-',a3),f11.4,f12.4)
++   20                format (' Dipole',4x,4(i7,'-',a3),f11.4,f17.9)
+@@ -284 +284 @@
+-   40                format (' Dipole',4x,4(i7,'-',a3),f11.4,f12.4)
++   40                format (' Dipole',4x,4(i7,'-',a3),f11.4,f17.9)

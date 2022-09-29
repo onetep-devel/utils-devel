@@ -1,0 +1,222 @@
+#!/bin/bash
+################################################################################
+# A part of TINKTEP, an interface between ONETEP and TINKER.                   #
+# Jacek Dziedzic, University of Southampton, May-December 2015.                #
+################################################################################
+
+################################################################################
+# *** xyz_sort_waters ***
+# Reorders water molecules to place the ones closest to the solute first.
+# Keeps a desired number of water molecules, discards the rest.
+# For information on which atoms are deemed to be a part the solute, see
+# comments in xyz_count_solute_atoms. It is assumed that the solute atoms are
+# the first ones in the .xyz file.
+#
+# The centre of the solute is either calculated as the geometric centre over
+# all solute atoms, or if a string "centre:<x> <y> <z>" is given in the molecule
+# comment (first line), it is used instead. This is useful for files with just
+# the solvent, where waters around a removed solute are to be picked.
+#
+# The resultant reordered, and potentially stripped of outermost waters
+# configuration is written to an *_out_xyz file.
+# 
+# v1.02
+# Jacek Dziedzic, May-December 2015.
+################################################################################
+# Revision history:
+# v1.00 2016.01.?? -- Initial version.
+# v1.01 2016.01.25 -- Cleanup, use of xyz_bbox_line, error codes.
+# v1.02 2016.05.13 -- Removed dependence on getcol.
+################################################################################
+
+myname="xyz_sort_waters"
+
+#-------------------------------------------------------------------------------
+# Aborts, printing a message and returning an error code.
+#-------------------------------------------------------------------------------
+function error() {
+  echo "!!! $myname: ERROR #$2: $1. Aborting!" >&2
+  exit $2
+}
+#-------------------------------------------------------------------------------
+
+################################################################################
+# Error codes
+################################################################################
+err_improper_invocation=101
+err_bbox=102
+err_nsolat=103
+err_ntotat=104
+err_bad_nsolat=105
+err_bad_ntotat=106
+err_centre=107
+
+################################################################################
+# main()
+################################################################################
+
+if [ $# -ne 3 ]; then
+  error "Improper invocation. Supply a name of the TINKER .xyz file, the name of a .prm file, and the number of closest H2O molecules to keep. Use -1 to keep all H2O molecules" $err_improper_invocation
+fi
+
+fin=$1
+ftmp=$fin.tmp
+fout=$fin.out_xyz
+fcentre=$fin.solute_centre
+fprm=$2
+nwat=$3
+
+# See if there's a BBox line in the .xyz file.
+bbox_line=`xyz_bbox_line $fin` || error "Could not verify the presence of, or parse, the BBox line in the .xyz file $fin" $err_bbox
+bbox_line_present=`echo $bbox_line | awk '{print ($4 > 0)}'`
+let "first_atom_line=2+bbox_line_present"
+
+centre_given=`head -n 1 $fin | grep -c "centre:"`
+
+if [ "$centre_given" == "1" ]; then
+  centrepos=`head -n 1 $fin | sed -r "s/.*centre://"`
+  centrex=`echo $centrepos | awk '{print $1}'`
+  centrey=`echo $centrepos | awk '{print $2}'`
+  centrez=`echo $centrepos | awk '{print $3}'`
+else
+  centrex="0"
+  centrey="0"
+  centrez="0"
+fi
+
+# Figure out the number of solute and total atoms
+nsolat=`xyz_count_solute_atoms $fin` || error "Could not determine the number of solute atoms" $err_nsolat
+ntotat=`head -n 1 $fin | awk '{print $1}'` || error "Could not determine the number of atoms" $err_ntotat
+
+if [ -z "$nsolat" ] || [ ! $nsolat -ge 0 ]; then
+  error "Invalid number of solute atoms in $fin." $err_bad_nsolat
+fi
+
+if [ -z "$ntotat" ] || [ ! $ntotat -gt 0 ]; then
+  error "Invalid number of atoms in $fin. Zero is not allowed, BTW" $err_bad_ntotat
+fi
+
+# Find the centre of the solute and the number of solute atoms
+rm -f "error_message"
+centre=`tail -n +$first_atom_line $fin | awk -v nsolat=$nsolat -v centrex=$centrex -v centrey=$centrey -v centrez=$centrez -v centre_given=$centre_given '
+{
+  if(NR <= nsolat) {
+    # Solute atom
+    x=$3;
+    y=$4;
+    z=$5;
+    totx+=x;
+    toty+=y;
+    totz+=z;
+  };
+}
+END {
+  if(! centre_given) {
+    if(nsolat == 0) {
+      printf("Zero solute atoms and centre not specified in the input file") >"error_message"
+      exit 1;
+    }
+    centrex=totx/nsolat;
+    centrey=toty/nsolat;
+    centrez=totz/nsolat;
+  }
+  printf("%14.6f %14.6f %14.6f %d\n",centrex,centrey,centrez,nsolat);
+}
+'`
+
+if [ $? -ne 0 ]; then
+  errmsg=`cat error_message`
+  error "Could not determine the solute centre: $errmsg" $err_centre
+fi
+
+solx=`echo $centre | awk '{print $1}'`
+soly=`echo $centre | awk '{print $2}'`
+solz=`echo $centre | awk '{print $3}'`
+
+echo -n "*** Solute centre at $solx $soly $solz "
+if [ "$centre_given" == "1" ]; then
+  echo "(given in the input file)."
+else
+  echo "(calculated from $nsolat solute atoms)."
+fi
+echo $solx $soly $solz >$fcentre
+
+# Go through the atoms and calculate distance from solute centre. Store it in the first column.
+# Use 0.0 for solute atoms. Use OHH geometric centre for every water. 
+# Sort over the first column, thereby putting the closest waters first.
+rm -f $ftmp
+tail -n +$first_atom_line $fin | awk -v nsolat=$nsolat -v solx=$solx -v soly=$soly -v solz=$solz '
+{
+  if(NR <= nsolat) {
+    # Solute atom
+    printf("%14.6f %s\n",0.0,$0);
+  }
+  else {
+    # Water atom
+    # - set up state machine
+    if($2 == "H" && wat==2) wat=3;
+    if($2 == "H" && wat==1) wat=2;
+    if($2 == "O") wat=1;
+    # - act on state. First two atoms store, third atom dumps.
+    if(wat==1) {
+      watOidx=$1;
+      watOx=$3;
+      watOy=$4;
+      watOz=$5;
+      watOlinetail=substr($0,48);
+    }
+    if(wat==2) {
+      watH1idx=$1;
+      watH1x=$3;
+      watH1y=$4;
+      watH1z=$5;
+      watH1linetail=substr($0,48);
+    }
+    if(wat==3) {
+      watH2idx=$1;
+      watH2x=$3;
+      watH2y=$4;
+      watH2z=$5;
+      watH2linetail=substr($0,48);
+
+      watx=(watOx+watH1x+watH2x)/3.0;
+      waty=(watOy+watH1y+watH2y)/3.0;
+      watz=(watOz+watH1z+watH2z)/3.0;
+      dist=sqrt((solx-watx)*(solx-watx)+(soly-waty)*(soly-waty)+(solz-watz)*(solz-watz));
+      printf("%14.6f %6d  O   %11.6f %11.6f %11.6f%s\n",dist,watOidx,watOx,watOy,watOz,watOlinetail);
+      printf("%14.6f %6d  H   %11.6f %11.6f %11.6f%s\n",dist,watH1idx,watH1x,watH1y,watH1z,watH1linetail);
+      printf("%14.6f %6d  H   %11.6f %11.6f %11.6f%s\n",dist,watH2idx,watH2x,watH2y,watH2z,watH2linetail);
+    }
+  }
+}' | sort -gk1,2 >>$ftmp
+
+# New number of atoms
+if [ "$nwat" == "-1" ]; then
+  let "new_ntotat=ntotat"
+else
+  let "new_ntotat=nsolat+3*nwat"
+fi  
+
+# Clone the header (with the number of atoms adjusted).
+head -n 1 $fin | awk -v new_ntotat=$new_ntotat '{printf("%6d %s\n",new_ntotat,substr($0,7))}' >$fout
+
+# If BBox, clone it too
+if [ "$bbox_line_present" == "1" ]; then
+  head -n 2 $fin | tail -n 1 >>$fout
+fi
+
+# Extract the solute and the first nwat waters from the intermediate file, strip the first column that's no longer needed.
+cat $ftmp | awk -v new_ntotat=$new_ntotat '
+{
+  if(NR <= new_ntotat) {
+    printf("%s\n",substr($0,16));
+  }
+}' >>$fout
+
+# Use TINKER's xyzedit to renumber to consecutive indices
+echo -e "$fprm\n1\n\n" | xyzedit $fout >/dev/null
+
+# Rename the result, create a distance histogram for the waters, and get rid of the temporary file
+mv -f $fin.xyz $fout
+cat $ftmp | awk '{if($1 != 0.0) counter++; if(counter%3 == 2) {print (counter+1)/3,$1}}' >$fin.water_distance_histogram.txt
+rm -f $ftmp

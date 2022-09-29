@@ -1,0 +1,49 @@
+#!/bin/bash
+
+# Extracts the results of the NGWF CG optimisation steps from an output file 
+# (which may still be running) and outputs them in a format as if you were 
+# running with output_detail=BRIEF or looking at the calculation summary
+# By Nicholas Hine
+
+for files in $@
+do
+
+awk 'BEGIN {niter=0; brief=0; oldstep0=0; inlnv=0}
+     /NGWF CG iteration  001/ {; message=""};
+     /Job started/ {printf "%s\n",$0; brief=0};
+     /Job completed/ {printf "%s%s%s%s%s%s\n",$0," in ",TT," on ",NN," processors"};
+     /Starting conduction NGWF pre-optimisation process/ {print};
+     /Conduction NGWF pre-optimisation process complete/ {print};
+     /Proceeding with the main conduction NGWF optimisation process/ {print; oldstep0=0; step0=0; inlnv=0};
+     /TOTAL TIME/ {TT=$3; NN=$5};
+     /Running on/ {printf " %s %s %s\n",$2,$3,$4};
+     /RMS gradient/&&($0!~/Max/) {rmsgrad=$4;};
+     /Total free energy/ {oldstep0=step0; step0=$5};
+     /Selected quadratic step/ {step=$5};
+     /Selected cubic step/ {step=$5};
+     /Moving atom/ {print};
+     /Predicted total energy/ {pred=$5};
+     /Predicted gain in energy/ {gain=$6};
+     /Starting BFGS iteration/||/improving iteration/ {step0=0; oldstep0=1};
+     /NGWF RMS gradient =/ {rmsgrad=$5};
+     /BFGS: starting iteration/ {niter=0};
+     /\[H,K\] commutator/ {commutator=$4};
+     /\|  commutator / {inlnv=1; itlnv=1;};
+     (inlnv==1)&&(itlnv==$1) {commutator=$4; itlnv=itlnv+1};
+     /Optimising kernel for current NGWFs/ {inlnv=1; niter=niter+1;
+        if (niter==1) {print "|iter|    RMS Gradient   |     Total Energy    |   Step   |   Commutator |       Change        |";}
+        else {printf "%4d%21.14f%22.14f%11.6f%15.11f%22.14f\n",niter-1,rmsgrad,step0,step,commutator,step0-oldstep0;};}
+     /Density kernel optimised for the current NGWF basis/ {inlnv=0};
+     /WARNING: slope along search direction is still positive/ {slope=slope+1}
+     /WARNING: maximum number of NGWF CG iterations/ {message="  <-- MAXIT_NGWF_CG EXCEEDED"}
+     /NGWF optimisation converged/ {message=" <-- CG CONVERGED";
+         getline; rmsgrad=$6}
+     /NGWF self-consistent optimisation/ {brief=1;};
+     (brief==0)&&/\-\- CG/ {niter=niter+1;
+                step0=$3; 
+                printf "%4d%21.14f%22.14f%11.6f%15.11f%22.14f%s\n",niter-1,rmsgrad,step0,0.0,commutator,step0-oldstep0,message;
+                niter=0};
+     (brief==1)&&(NF>1)&&($0!~/[\|#=:(]/) {print $0; if($5~/CG/||$0~/Job started/) {brief=0}};
+     /BFGS/&&($0!~/BFGS: line :/)&&($0!~/BFGS: trial:/)&&($0!~/BFGS: quad :/) {print};' $files
+
+done

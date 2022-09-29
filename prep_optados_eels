@@ -1,0 +1,42 @@
+#!/bin/bash
+
+################################################################################
+#
+# Creates the files necessary to execute optados after a conduction run
+# Written by Nicholas Hine 18/12/14
+#
+################################################################################
+
+SEED=$1
+
+cp $SEED"_joint.elnes_bin" $SEED".elnes_bin"
+cp $SEED".joint_bands" $SEED".bands"
+cp $SEED".dat" $SEED"-out.cell"
+
+#OptaDoS now expects a symmetry block
+if !(grep -Fxq "BLOCK SYMMETRY_OPS" $SEED"-out.cell")
+then
+
+cat << EOF >> $SEED"-out.cell" 
+%BLOCK SYMMETRY_OPS
+     1        0        0
+     0        1        0
+     0        0        1
+     0        0        0
+%ENDBLOCK SYMMETRY_OPS
+EOF
+
+fi
+
+cat << EOF > $SEED".odi"
+TASK                : CORE
+BROADENING          : fixed
+FIXED_SMEARING      : 0.3
+EFERMI              : insulator
+DOS_SPACING         : 0.01
+CORE_GEOM           : polycrystalline
+CORE_LAI_BROADENING : true
+LAI_GAUSSIAN_WIDTH   : 0.6
+LAI_LORENTZIAN_WIDTH : 0.2
+LAI_LORENTZIAN_SCALE : 0.1
+EOF

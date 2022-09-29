@@ -1,0 +1,466 @@
+#!/bin/bash
+################################################################################
+# A part of TINKTEP, an interface between ONETEP and TINKER.                   #
+# Jacek Dziedzic, University of Southampton, May 2015-February 2017.           #
+################################################################################
+
+################################################################################
+# *** tinktep ***
+# Driver script. Sets up signal traps to ensure cleanup if something goes wrong,
+# then executes the preparation stage:
+# - xyz_split
+# - qm_xyz_to_dat
+# - start_onetep
+# - start_watchdog
+#
+# Subsequently enters the SCF cycle, which consists of:
+# - waiting for ONETEP
+# - run_poledit
+# - xyz_process
+# - key_process
+# - run_tinker
+# - mpoles_process
+# - checking ONETEP is alive and pinging it
+# - moving temporary files from this iteration to 'intermediate'
+#
+################################################################################
+# Revision history:
+# v1.01 2015.12.22 -- Cleanup and documentation
+# v1.02 2016.01.13 -- "--dry-run" option.
+# v1.03 2016.01.22 -- Error messages from trap kill suppressed, as sometimes
+#                     there are no background processes to kill.
+# v1.04 2016.04.11 -- Minor revision of watchdog monitoring.
+# v1.05 2016.05.10 -- Handles corner case scenario when ONETEP is killed from
+#                     the outside while we're waiting on the QM2MM lock.
+# v1.06 2016.07.28 -- "--dry-run" fixed.
+# v1.07 2016.09.21 -- More graceful exit.
+# v1.08 2016.11.23 -- Minor improvement to error reporting.
+# v1.09 2017.03.14 -- Better handling of killing processes in case of errors.
+# v1.10 2017.03.16 -- Improved the above for the case of early errors when mpirun_pid is not known yet.
+# v1.11 2017.03.16 -- Fixed check for missing 'parameters' keyword.
+# v1.12 2017.03.16 -- Fixed bug introduced in v1.10.
+# v1.13 2017.03.16 -- pure_mm added.
+# v1.14 2017.03.22 -- Disallows an empty MM region unless pure_qm is specified.
+# v1.15 2017.04.28 -- qm_dummy_atoms added.
+# v1.16 2017.05.02 -- Stages ("-1" and "-2" command line options). "--dry-run" deprecated.
+# v1.17 2017.05.10 -- Ensures .tag and .xyz file are readable.
+# v1.18 2017.05.15 -- GDMA file uses swex_name in prefix.
+# v1.19 2017.09.21 -- Suppresses stderr from the final kill of mpirun process.
+# v1.20 2018.05.23 -- Commits process suicide silently. So sad.
+################################################################################
+# @TODO:
+# - Abort on unrecognized keywords.
+# - 'Ignore region' in .tag file (third line) does not support atom indexes in the middle -- error #128 tinker renumbering MM file.
+# - xyz_process assumes a fixed-form .xyz file (magic column 49). This breaks now for files processed with xyzedit, since output accuracy has been increased all over tinker.
+# - xyz_sort_waters and possibly key_process suffer from the same problem.
+myver="v1.20"
+
+myname="tinktep"
+configfile="tinktep.config"
+onetep2tinker="\$QM2MM.lock"
+tinker2onetep="\$MM2QM.lock"
+intermediate="intermediate"
+mpole_set_name="_scf_dma_total_"
+#mpole_set_name="_"
+other_mpole_set_names="_vacuum_dma_ _scf_dma_ _scf_dma_polarisation_ _only_vac_dma_"
+
+# List of keywords
+# ----------------
+# classical_atoms
+# coord_xlat
+# jobname
+# mm_fixed_charge
+# mpirun_executable
+# mpirun_args
+# onetep_args
+# onetep_executable
+# onetep_induced_dipoles
+# onetep_nranks
+# onetep_nthreads
+# onetep_perm_mpoles
+# pure_mm
+# pure_qm
+# qm_dummy_atoms
+# qm_polari[sz]ability
+# qm_thole_polari[sz]ability
+# qm_mm_thole_a
+# qm_mm_polscal
+# renumber_offset
+# tinker_angle_energy
+# tinker_bond_energy
+# tinker_ureybrad_energy
+# tinker_mm_perm_energy
+# tinker_mm_pol_energy
+# tinker_mm_vdw_energy
+# tinker_nthreads
+# tinker_qm_mm_perm_energy
+# tinker_qm_mm_pol_energy
+# tinker_qm_mm_vdw_energy
+# watchdog_unfazed_by_stderr
+
+# List of command-line options
+# ----------------------------
+# -1 (equivalent to --dry-run)
+# -2
+
+#-------------------------------------------------------------------------------
+# Finishes gracefully
+#-------------------------------------------------------------------------------
+function graceful_exit() {
+  if [ ! -z "$mpirun_pid" ]; then kill -9 $mpirun_pid 2>/dev/null; fi  # Get rid of ONETEP processes (useful when watchdog dies). Only if we know the PID to kill.
+  kill -- -$$ 2>/dev/null    # Get rid of jobs we started in the background and commit suicide 
+  trap - SIGTERM SIGINT EXIT # Restore default behaviours for traps.
+  exit $1
+}
+
+#-------------------------------------------------------------------------------
+# Aborts, printing a message and returning an error code.
+#-------------------------------------------------------------------------------
+function error() {
+  echo -e "!!! $myname: ERROR #$2: $1. Aborting!" >&2
+  graceful_exit $2
+}
+#-------------------------------------------------------------------------------
+
+
+################################################################################
+# Error codes
+################################################################################
+err_in_xyz_split=101
+err_in_qm_xyz_to_dat=102
+err_in_start_onetep=103
+err_in_start_watchdog=104
+err_onetep_reported=105
+err_in_run_poledit=106
+err_in_xyz_process=107
+err_in_key_process=108
+err_in_run_tinker=109
+err_in_mpoles_process=110
+err_pinging_onetep=111
+err_onetep_watchdog=112
+err_onetep_died=113
+err_config_file=114
+err_config_file_directive_jobname=115
+err_key_missing_parameters=116
+err_ff_param_file_unreadable=117
+err_key_file_unreadable=118
+err_in_mkdir=119
+err_unexpected_error=120
+err_no_mm_atoms=121
+err_improper_invocation=122
+err_tag_file_unreadable=123
+err_xyz_file_unreadable=124
+
+#-------------------------------------------------------------------------------
+# Parses the config file
+#-------------------------------------------------------------------------------
+function parse_config() {
+  if [ ! -r $configfile ]; then
+    error "Cannot read $configfile" $err_config_file
+  fi
+
+  if [ `cat $configfile | tr "\t" " " | sed -r "s/ +/ /g" | grep -Ec "^jobname"` != 1 ]; then
+    error "Setting 'jobname' is not defined, or is defined multiply, in $configfile" $err_config_file_directive_jobname
+  fi
+  opt_jobname=`cat $configfile | tr "\t" " " | sed -r "s/ +/ /g" | grep -E "^jobname" | sed "s/jobname //" | sed "s/ *//g"`
+  echo "    (jobname: $opt_jobname)"
+
+  opt_pure_mm=`cat $configfile | tr "\t" " " | sed -r "s/ +/ /g" | grep -Ec "^pure_mm" | awk '{if($1>0) print "1"; else print "0";}'`
+  if [ $opt_pure_mm == "1" ]; then
+    echo "    (A purely MM run -- ONETEP will not be invoked)"
+  fi
+
+  opt_pure_qm=`cat $configfile | tr "\t" " " | sed -r "s/ +/ /g" | grep -Ec "^pure_qm" | awk '{if($1>0) print "1"; else print "0";}'`
+  if [ $opt_pure_qm == "1" ]; then
+    echo "    (A purely QM run -- TINKTEP will not be invoked)"
+  fi
+
+  opt_qm_dummy_atoms=`cat $configfile | tr "\t" " " | sed -r "s/ +/ /g" | grep -Ec "^qm_dummy_atoms" | awk '{if($1>0) print "1"; else print "0";}'`
+  if [ $opt_qm_dummy_atoms == "1" ]; then
+    echo "    (Dummy QM atoms will be created from MM atoms)"
+  fi
+
+}
+
+################################################################################
+# main()
+################################################################################
+banner="************************************************"
+echo "$banner"
+echo "*** $myname $myver                            ***"
+echo "$banner"
+
+if [ $# -gt 1 ] || ( [ "$1" != "-1" ] && [ "$1" != "-2" ] && [ "$1" != "" ] ); then
+  error "Improper invocation. Run with no parameters or with a single parameter that is '-1' or '-2'" $err_improper_invocation
+fi
+
+parse_config
+
+trap "trap - SIGTERM; echo; echo \"$banner\"; echo \"***\" $myname 'terminated                       '\"***\"; echo \"$banner\"; kill -- -$$ 2>/dev/null" SIGTERM
+trap "trap - SIGINT; echo; echo \"$banner\"; echo \"***\" $myname 'interrupted                      '\"***\"; echo \"$banner\"; kill -- -$$ 2>/dev/null" SIGINT
+trap "trap - EXIT; echo; echo \"$banner\"; echo \"***\" $myname 'finished                         '\"***\"; echo \"$banner\"; kill -- -$$ 2>/dev/null" EXIT
+
+# --- Ascertain which stages to run ---
+stages=3
+if [ "$1" == "-1" ] || [ "$1" == "--dry-run" ]; then
+  echo "    ! Running stage 1 (xyz_split and qm_xyz_to_dat) only."
+  stages=1
+fi
+
+if [ "$1" == "-2" ]; then
+  echo "    ! Running stage 2 (SCF cycle) only."
+  stages=2
+fi
+
+# --- Clean up thoroughly, unless we're only doing stage 2 ---
+if [ "$stages" != "2" ]; then
+  cleanup
+else
+  cleanup -2
+fi
+
+# --- Check that FF param file exists ---
+if [ ! -r "$opt_jobname.key" ]; then
+  error "The key file $opt_jobname.key does not exist or is unreadable" $err_key_file_unreadable
+fi
+FFparamfile=`cat $opt_jobname.key | tr "\t" " " | sed -r "s/ +/ /g" | grep "parameters" | sed "s/parameters //"`".prm"
+if [ "$FFparamfile" == ".prm" ]; then
+  error "The directive 'parameters' is missing in TINKER key file $opt_jobname.key" $err_key_missing_parameters
+fi
+if [ ! -r "$FFparamfile" ]; then
+  error "The force-field parameter file '$FFparamfile' does not exist or is unreadable" $err_ff_param_file_unreadable
+fi
+
+# --- Check that tag file exists ---
+if [ ! -r "$opt_jobname.tag" ]; then
+  error "The tag file $opt_jobname.tag does not exist or is unreadable" $err_tag_file_unreadable
+fi
+
+# --- Check that xyz file exists ---
+if [ ! -r "$opt_jobname.xyz" ]; then
+  error "The xyz file $opt_jobname.xyz does not exist or is unreadable" $err_xyz_file_unreadable
+fi
+
+# Ensure there is at least one MM atom or 'pure_qm' is specified. TINKER hangs when all atoms are marked as inactive.
+mm_atom_list=`cat $opt_jobname.tag | head -n 2 | tail -n 1 | awk '{print $1+0}'`
+if [ "$mm_atom_list" == "-1" ] && [ $opt_pure_qm == "0" ]; then
+  error "'pure_qm' is not specified in the config file, but the MM region is empty. Cannot run TINKER with an empty MM region -- it hangs when all atoms are marked as inactive. Add 'pure_qm' to tinktep.config to run a purely QM calculation" $err_no_mm_atoms
+fi
+
+if [ "$stages" != "2" ]; then
+  # --- xyz_split ---
+  xyz_split $opt_jobname.xyz $opt_jobname.tag
+  result=$?
+  if [ $result -ne 0 ]; then
+    error "xyz_split failed" $err_in_xyz_split
+  fi
+
+  # --- qm_xyz_to_dat ---
+  if [ $opt_pure_mm == "0" ]; then
+    qm_xyz_to_dat $opt_jobname"_qm".xyz $opt_jobname.dat.template
+    result=$?
+    if [ $result -ne 0 ]; then
+      error "qm_xyz_to_dat failed" $err_in_qm_xyz_to_dat
+    fi
+  fi
+fi
+
+if [ "$stages" == "1" ]; then
+  echo -e "\n$myname stage 1 completed, exiting."
+  exit 0
+fi
+
+# --- A whole lot of things do not happen if we're doing a pure MM calculation
+if [ $opt_pure_mm == "0" ]; then
+  mkdir $intermediate
+  result=$?
+  if [ $result -ne 0 ]; then
+    error "Error creating the directory for intermediate files ($intermediate). Check permissions" $err_in_mkdir
+  fi
+
+  # --- start_onetep ---
+  start_onetep $opt_jobname"_qm_mm".dat
+  result=$?
+  if [ $result -ne 0 ]; then
+    error "start_onetep failed" $err_in_start_onetep
+  fi
+  mpirun_pid=`cat "mpirun_pid"` # Store this in case watchdog dies and it's up to us to kill off onetep processes.
+
+  # --- start watchdog ---
+  ( start_watchdog $opt_jobname"_qm_mm".dat || echo "Error code $? running start_watchdog" >> "error_message" ) &
+  sleep 1
+  if [ -r "error_message" ]; then
+    errmsg=`cat error_message`
+    error "start_watchdog failed: $errmsg" $err_in_start_watchdog
+  fi
+  # The above reliably detects errors during startup (say, missing 'start_watchdog', or insufficient resources),
+  # and semi-reliably detects errors returned from inside start_watchdog (only if they are reported within 1 second).
+  # The latter are quite improbable anyway.
+
+  rm -f "mpirun_pid"
+fi
+
+# --------------------
+# --- S C F  cycle ---
+# --------------------
+
+scfiter=1
+
+while [ true ]; do
+
+  # --- A whole lot of things do not happen if we're doing a pure MM calculation
+  if [ $opt_pure_mm == "0" ]; then
+
+    echo -e "\n%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%"
+    echo -n "%%% SCF iteration "
+    printf %4d $scfiter
+    echo "             %%%"
+    echo "%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%"
+
+    echo "*** Waiting for ONETEP..."
+    result=`cat $onetep2tinker` # [*]
+    errmessagefile=$opt_jobname"_qm_mm.error_message"
+    errfile=$opt_jobname"_qm_mm.err"
+    if [ "$result" == "0" ]; then
+      # --- ONETEP terminated with an error ---
+      if [ -r "$errmessagefile" ]; then
+        # If there's an error message file -- show it
+        errmsg=`cat $errmessagefile`
+      else
+        # If not (SIGSEGV, SIGKILL, SIGBUS, ...) -- show the gory details of the .err file
+        errmsg=`cat $errfile`
+      fi
+      error "ONETEP reported an error: \n$errmsg\n" $err_onetep_reported
+    elif [ "$result" == "2" ]; then
+      sleep 2 # Give the error_message file more time to appear.
+      # --- ONETEP died ---
+      if [ -r "$errmessagefile" ]; then
+        # If there's an error message file -- show it
+        errmsg=`cat $errmessagefile`
+      else
+        # If not (SIGSEGV, SIGKILL, SIGBUS, ...) -- show the gory details of the .err file
+        errmsg=`cat $errfile`
+      fi
+      error "WATCHDOG realised ONETEP died or reported an error: \n$errmsg\n" $err_onetep_watchdog
+    elif [ "$result" == "1" ]; then
+      # --- ONETEP proceeding OK ---
+      echo "*** SCF iteration completed."
+    elif [ "$result" == "3" ]; then
+      # --- ONETEP finished successfully ---
+      echo "*** TINKTEP calculation completed ***"
+      echo "*** Here's a summary ***"
+      # rm -rf $intermediate
+      tinktep_summarise $opt_jobname"_qm_mm.out"
+      graceful_exit 0
+    else
+      if [ -z "$result" ]; then
+        # This happens when 'cat' at [*] fails, usualy after ONETEP is killed externally
+        result=42
+      fi
+      echo "!!! Unexpected error (code $result). Probably ONETEP killed by OOM killer or cancelled by a resource enforcer (out of walltime)."
+      error "!!! Unexpected error: (code $result). Probably ONETEP killed by OOM killer or cancelled by a resource enforcer (out of walltime)" $err_unexpected_error
+    fi
+
+    # --- run_poledit ---
+    run_poledit $opt_jobname"_qm_mm"$mpole_set_name"dma_multipoles_gdma_like.txt"
+    result=$?
+    if [ $result -ne 0 ]; then
+      error "run_poledit failed" $err_in_run_poledit
+    fi
+  else
+    # For pure MM create a dummy QM key file
+    echo >$opt_jobname"_qm.key"
+  fi
+
+  # --- xyz_process ---
+  xyz_process $opt_jobname"_qm.xyz" $opt_jobname"_mm.xyz"
+  result=$?
+  if [ $result -ne 0 ]; then
+    error "xyz_process failed" $err_in_xyz_process
+  fi
+
+  # --- key_process ---
+  key_process $opt_jobname"_qm.key" $opt_jobname".key" $opt_jobname".tag" $opt_jobname"_qm.xyz"
+  result=$?
+  if [ $result -ne 0 ]; then
+    error "key_process failed" $err_in_key_process
+  fi
+
+  # --- A whole lot of things do not happen if we're doing a pure MM calculation
+  if [ $opt_pure_mm == "0" ]; then
+
+
+    # Clean up the old multipoles
+    if [ $scfiter -gt 1 ]; then
+      mv -f $opt_jobname"_mm.mpoles_for_onetep" $intermediate/$opt_jobname"_mm.mpoles_for_onetep.$scfiter"
+    fi
+
+  fi # if not pure MM
+
+  # --- run_tinker ---
+  run_tinker $opt_jobname"_qm_mm.xyz"
+  result=$?
+  if [ $result -ne 0 ]; then
+    error "run_tinker failed" $err_in_run_tinker
+  fi
+
+  # --- A whole lot of things do not happen if we're doing a pure MM calculation
+  if [ $opt_pure_mm == "0" ]; then
+
+    # --- mpoles_process ---
+    mpoles_process $opt_jobname"_mm.mpoles" -t $opt_jobname".coord_translation"
+    result=$?
+    if [ $result -ne 0 ]; then
+      error "mpoles_process failed" $err_in_mpoles_process
+    fi
+    rm -f $opt_jobname"_mm.mpoles"
+
+    # --- check ONETEP hasn't crashed ---
+    if [ -s $opt_jobname.err ]; then
+      errmsg=`cat $errmessagefile`
+      error "ONETEP exited with an error:\n$opt_jobname.err\n" $err_onetep_died
+    fi
+
+    # --- ping ONETEP ---
+    echo "1" >$tinker2onetep
+    result=$?
+    if [ $result -ne 0 ]; then
+      error "Pinging ONETEP failed" $err_pinging_onetep
+    fi
+
+    # --- Clean up temporary files ---
+    mv -f $opt_jobname"_qm.key" $intermediate/$opt_jobname"_qm.key.$scfiter"
+    mv -f $opt_jobname"_qm_mm.f" $intermediate/$opt_jobname"_qm_mm.f.$scfiter"
+    mv -f $opt_jobname"_qm_mm.key" $intermediate/$opt_jobname"_qm_mm.key.$scfiter"
+    mv -f $opt_jobname"_qm_mm.dynamic_log" $intermediate/$opt_jobname"_qm_mm.dynamic_log.$scfiter"
+    mv -f $opt_jobname"_qm_mm.analyze_log" $intermediate/$opt_jobname"_qm_mm.analyze_log.$scfiter"
+    mv -f $opt_jobname"_qm_mm.poledit_log" $intermediate/$opt_jobname"_qm_mm.poledit_log.$scfiter"
+    mv -f $opt_jobname"_qm_mm.xyz" $intermediate/$opt_jobname"_qm_mm.xyz.$scfiter"
+
+    mv -f $opt_jobname"_qm_mm"$mpole_set_name"dma_multipoles_atomcentred_elec_cartesian_primitive.txt" $intermediate/$opt_jobname"_qm_mm"$mpole_set_name"dma_multipoles_atomcentred_elec_cartesian_primitive.txt.$scfiter"
+    mv -f $opt_jobname"_qm_mm"$mpole_set_name"dma_multipoles_atomcentred_elec_cartesian_traceless.txt" $intermediate/$opt_jobname"_qm_mm"$mpole_set_name"dma_multipoles_atomcentred_elec_cartesian_traceless.txt.$scfiter"
+    mv -f $opt_jobname"_qm_mm"$mpole_set_name"dma_multipoles_atomcentred_elec_spherical_real.txt" $intermediate/$opt_jobname"_qm_mm"$mpole_set_name"dma_multipoles_atomcentred_elec_spherical_real.txt.$scfiter"
+    mv -f $opt_jobname"_qm_mm"$mpole_set_name"dma_multipoles_refpt_elec_cartesian_primitive.txt" $intermediate/$opt_jobname"_qm_mm"$mpole_set_name"dma_multipoles_refpt_elec_cartesian_primitive.txt.$scfiter"
+    mv -f $opt_jobname"_qm_mm"$mpole_set_name"dma_multipoles_refpt_elec_cartesian_traceless.txt" $intermediate/$opt_jobname"_qm_mm"$mpole_set_name"dma_multipoles_refpt_elec_cartesian_traceless.txt.$scfiter"
+    mv -f $opt_jobname"_qm_mm"$mpole_set_name"dma_multipoles_refpt_total_cartesian_primitive.txt" $intermediate/$opt_jobname"_qm_mm"$mpole_set_name"dma_multipoles_refpt_total_cartesian_primitive.txt.$scfiter"
+    mv -f $opt_jobname"_qm_mm"$mpole_set_name"dma_multipoles_refpt_total_cartesian_traceless.txt" $intermediate/$opt_jobname"_qm_mm"$mpole_set_name"dma_multipoles_refpt_total_cartesian_traceless.txt.$scfiter"
+    mv -f $opt_jobname"_qm_mm"$mpole_set_name"dma_multipoles_gdma_like.txt" $intermediate/$opt_jobname"_qm_mm"$mpole_set_name"dma_multipoles_gdma_like.txt.$scfiter"
+
+    for cur_mpole_set_name in $other_mpole_set_names; do
+      mv -f $opt_jobname"_qm_mm"$cur_mpole_set_name"dma_multipoles_atomcentred_elec_cartesian_primitive.txt" $intermediate/$opt_jobname"_qm_mm"$cur_mpole_set_name"dma_multipoles_atomcentred_elec_cartesian_primitive.txt.$scfiter" 2>/dev/null
+      mv -f $opt_jobname"_qm_mm"$cur_mpole_set_name"dma_multipoles_atomcentred_elec_cartesian_traceless.txt" $intermediate/$opt_jobname"_qm_mm"$cur_mpole_set_name"dma_multipoles_atomcentred_elec_cartesian_traceless.txt.$scfiter" 2>/dev/null
+      mv -f $opt_jobname"_qm_mm"$cur_mpole_set_name"dma_multipoles_atomcentred_elec_spherical_real.txt" $intermediate/$opt_jobname"_qm_mm"$cur_mpole_set_name"dma_multipoles_atomcentred_elec_spherical_real.txt.$scfiter" 2>/dev/null
+      mv -f $opt_jobname"_qm_mm"$cur_mpole_set_name"dma_multipoles_refpt_elec_cartesian_primitive.txt" $intermediate/$opt_jobname"_qm_mm"$cur_mpole_set_name"dma_multipoles_refpt_elec_cartesian_primitive.txt.$scfiter" 2>/dev/null
+      mv -f $opt_jobname"_qm_mm"$cur_mpole_set_name"dma_multipoles_refpt_elec_cartesian_traceless.txt" $intermediate/$opt_jobname"_qm_mm"$cur_mpole_set_name"dma_multipoles_refpt_elec_cartesian_traceless.txt.$scfiter" 2>/dev/null
+      mv -f $opt_jobname"_qm_mm"$cur_mpole_set_name"dma_multipoles_refpt_total_cartesian_primitive.txt" $intermediate/$opt_jobname"_qm_mm"$cur_mpole_set_name"dma_multipoles_refpt_total_cartesian_primitive.txt.$scfiter" 2>/dev/null
+      mv -f $opt_jobname"_qm_mm"$cur_mpole_set_name"dma_multipoles_refpt_total_cartesian_traceless.txt" $intermediate/$opt_jobname"_qm_mm"$cur_mpole_set_name"dma_multipoles_refpt_total_cartesian_traceless.txt.$scfiter" 2>/dev/null
+      mv -f $opt_jobname"_qm_mm"$cur_mpole_set_name"dma_multipoles_gdma_like.txt" $intermediate/$opt_jobname"_qm_mm"$cur_mpole_set_name"dma_multipoles_gdma_like.txt.$scfiter" 2>/dev/null
+    done
+
+  else
+    break # Leave the SCF loop after 1 iteration if doing pure MM
+  fi
+
+  let "scfiter++"
+
+done

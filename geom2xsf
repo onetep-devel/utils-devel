@@ -1,0 +1,39 @@
+#!/bin/bash
+
+# Converts .geom or .md files produced by ONETEP into .xsf files for xcrysden.
+# By Nicholas Hine
+
+# Put this file in your ~/bin directory, and then add the three lines below to 
+# the file ~/.xcrysden/custom-definitions to enable direct loading of .geom
+# files in xcrysden:
+
+#addOption --geom /home/yourusername/bin/geom2xsf {
+#                    load structure and forces from ONETEP/CASTEP .geom output
+#}
+
+
+Nat=`awk '/\-\- R/ {A=A+1}; /\-\- F/ {print A; exit}' $1`
+Nstep=`grep '\-\- E' $1  | wc | awk '{print $1}'`
+awk 'BEGIN {Nat='$Nat';
+            Nstep='$Nstep';
+            print "ANIMSTEPS",Nstep; a=0.5291772; e=27.21138; N=0};
+     /\-\- h/ {N=N+1;at=0;
+               a11=$1*a; a12=$2*a; a13=$3*a; getline;
+               a21=$1*a; a22=$2*a; a23=$3*a; getline;
+               a31=$1*a; a32=$2*a; a33=$3*a; getline;
+               print "CRYSTAL",N;
+               print "PRIMVEC",N;
+               print a11,a12,a13;
+               print a21,a22,a23;
+               print a31,a32,a33;
+               print "CONVVEC";
+               print a11,a12,a13;
+               print a21,a22,a23;
+               print a31,a32,a33;
+               print "PRIMCOORD",N
+               print Nat,1;}
+     /\-\- R/ {at=at+1;rx[at]=$3*a; ry[at]=$4*a;rz[at]=$5*a;
+               if(at==Nat){at=0;}};
+     /\-\- F/ {at=at+1;fx[at]=$3/a*e; fy[at]=$4/a*e;fz[at]=$5/a*e;
+               printf "%2s%12.6f%12.6f%12.6f%13.9f%13.9f%13.9f\n",
+               $1,rx[at],ry[at],rz[at],fx[at],fy[at],fz[at];};' $1

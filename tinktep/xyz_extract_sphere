@@ -1,0 +1,88 @@
+#!/bin/bash
+################################################################################
+# A part of TINKTEP, an interface between ONETEP and TINKER.                   #
+# Jacek Dziedzic, University of Southampton, May-December 2015.                #
+################################################################################
+
+################################################################################
+# *** xyz_extract_sphere ***
+# Sorts water molecules in an .xyz file, using distance from a solute centre
+# as a criterion. Keeps all waters whose centres remain within box_half from
+# the solute centre, where box_half is half the BBox of the input file.
+# Trajectory snapshots (.nnn) files are also accepted.
+#
+# v1.05
+# Jacek Dziedzic, May-December 2015.
+################################################################################
+# Revision history:
+# v1.00 2016.01.?? -- Initial version.
+# v1.01 2016.01.25 -- Cleanup, error codes.
+# v1.05 2016.09.15 -- Supports cuboid boxes. Precision increased in boxhalf.
+################################################################################
+
+myname="xyz_extract_sphere"
+
+#-------------------------------------------------------------------------------
+# Aborts, printing a message and returning an error code.
+#-------------------------------------------------------------------------------
+function error() {
+  echo "!!! $myname: ERROR #$2: $1. Aborting!" >&2
+  exit $2
+}
+#-------------------------------------------------------------------------------
+
+################################################################################
+# Error codes
+################################################################################
+err_improper_invocation=101
+err_bbox=102
+err_bbox_invalid=103
+err_in_water_balance=104
+err_in_xyz_split=105
+
+################################################################################
+# main()
+################################################################################
+
+if [ $# -ne 2 ]; then
+  error "Improper invocation. Supply the name of the input .xyz file and a .prm file" $err_improper_invocation
+fi
+
+inxyzf=$1
+prmf=$2
+root=`echo $inxyzf | sed -r "s/\.[xyz0-9]*$//"`
+
+# See if there's a BBox line in the .xyz file, we need it to get box_half.
+bbox_line=`xyz_bbox_line $inxyzf` || error "Could not verify the presence of, or parse, the BBox line in the .xyz file $inxyzf" $err_bbox
+bbox_line_is_a_cube=`echo $bbox_line | awk '{print ($4 == 1)}'`
+bbox_line_is_a_cuboid=`echo $bbox_line | awk '{print ($4 == 2)}'`
+
+if [ "$bbox_line_is_a_cube" != "1" ] && [ "$bbox_line_is_a_cuboid" != "1" ]; then
+  error "BBox absent or not cube or a cuboid in $inxyzf" $err_bbox_invalid
+fi
+
+if [ "$bbox_line_is_a_cube" == "1" ]; then
+  # Cubic box
+  boxhalf=`echo $bbox_line | awk '{print $1*0.5}'`
+else
+  # Cuboid box. Use the minimum of the three dimensions.
+  boxhalf=`echo $bbox_line | awk '{dim=($1 < $2 ? ($1 < $3 ? $1 : $3) : ($2 < $3 ? $2 : $3)); printf("%.9f",dim*0.5)}'`
+fi
+
+# Prepare a .tag file for carving out (solute + nearby waters).
+water_balance $inxyzf $prmf - $boxhalf || error "Error in water_balance" $err_in_water_balance
+
+# Effect the actual split.
+mv -f $inxyzf.out_xyz "$root""_sorted.xyz"
+mv -f $root.tag "$root""_sorted.tag"
+rm -f *_[qm]m.xyz
+xyz_split "$root""_sorted.xyz" "$root""_sorted.tag" || error "Error in xyz_split" $err_in_xyz_split
+
+# Remove the BBox line from the resultant file and rename it.
+# Also change "QM part of" that xyz_split added to the header to something more reasonable.
+head -n 1 "$root""_sorted_qm.xyz" | sed "s/QM part of/A sphere carved from/" > "$root""_carved.xyz"
+tail -n +3 "$root""_sorted_qm.xyz" >> "$root""_carved.xyz"
+
+# Clean up
+rm -f *.tag
+rm -f *sorted*.xyz

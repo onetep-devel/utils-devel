@@ -1,0 +1,226 @@
+#!/bin/bash
+################################################################################
+# A part of TINKTEP, an interface between ONETEP and TINKER.                   #
+# Jacek Dziedzic, University of Southampton, May-December 2015.                #
+################################################################################
+
+################################################################################
+# *** optimise_shell ***
+# Performs geometry optimisation on an outermost shell of water molecules.
+#
+# v1.06
+# Jacek Dziedzic, May-December 2015.
+################################################################################
+# Revision history:
+# v1.00 2016.01.?? -- Initial version.
+# v1.01 2016.01.25 -- Cleanup, use of xyz_bbox_line, error codes.
+# v1.05 2016.07.25 -- Correctly handles case of zero water molecules to fix.
+# v1.06 2016.09.21 -- Less greedy wildcard in log removal.
+################################################################################
+
+myname="optimise_shell"
+
+convg_threshold=0.01 # TINKER's default is 0.01
+plots_increment=5    # Spacing of points for the plot (every 5th geopt step, to save time)
+
+#-------------------------------------------------------------------------------
+# Aborts, printing a message and returning an error code.
+#-------------------------------------------------------------------------------
+function error() {
+  echo "!!! $myname: ERROR #$2: $1. Aborting!" >&2
+  exit $2
+}
+#-------------------------------------------------------------------------------
+
+################################################################################
+# Error codes
+################################################################################
+err_improper_invocation=101
+err_xyzf_unreadable=102
+err_nsolat=103
+err_ntotat=104
+err_bad_nsolat=105
+err_bad_ntotat=106
+err_fractional_water=107
+err_bad_nwat_to_fix=108
+err_tried_to_fix_all_waters=109
+err_in_xyz_split=110
+err_in_xyz_to_properties=111
+err_in_optimize=112
+
+################################################################################
+# main()
+################################################################################
+
+if [ $# -ne 2 ]; then
+  error "Improper invocation. Supply an input .xyz file name and a radius (in A) from the solute centre where atoms are to be fixed" $err_improper_invocation
+fi
+
+xyzf=$1
+fixrad=$2
+
+if [ ! -r $xyzf ]; then
+  error "$xyzf is absent or unreadable" $err_xyzf_unreadable
+fi
+
+# Atom and molecule arithmetics
+nsolat=`xyz_count_solute_atoms $xyzf` || error "Could not determine the number of solute atoms" $err_nsolat
+ntotat=`head -n 1 $xyzf | awk '{print $1}'` || error "Could not determine the number of atoms" $err_ntotat
+
+if [ -z "$nsolat" ] || [ ! $nsolat -gt 0 ]; then
+  error "Invalid number of solute atoms in $xyzf. Zero is not allowed, BTW" $err_bad_nsolat
+fi
+
+if [ -z "$ntotat" ] || [ ! $ntotat -gt 0 ]; then
+  error "Invalid number of atoms in $xyzf. Zero is not allowed, BTW" $err_bad_ntotat
+fi
+
+let "nwatat=ntotat-nsolat"
+let "nwat=nwatat/3"
+echo "*** There are $nsolat solute atoms in $xyzf, $ntotat atoms in total, which gives $nwatat water atoms or $nwat water molecules."
+
+# Sanity check
+let "nwatat_check=nwat*3"
+if [ "$nwatat" != "$nwatat_check" ]; then
+  error "$xyzf seems to contain a fraction of a water molecule, this is spooky" $err_fractional_water
+fi
+
+# Determine the number of water molecules to fix from the histogram file.
+nwat_to_fix=`cat *distance_histogram.txt | awk -v fixrad=$fixrad '
+{
+  if($2 > fixrad) {
+    print prev+0; # +0 makes sure we return 0 when prev is undefined, ie. first atom already beyond fixrad.
+    exit
+  }
+  prev=$1;
+}'`
+
+if [ -z "$nwat_to_fix" ]; then
+  error "Could not determine the number of water molecules to fix. Either all waters are within $fixrad A from the centre or something went wrong" $err_bad_nwat_to_fix
+fi
+
+let "nwat_opt=nwat-nwat_to_fix"
+
+# Handle the scenario where there were enough waters in the histogram, but not in the file after carving.
+if [ $nwat_opt -lt 1 ]; then
+  error "With a radius of $fixrad A you'd be fixing all available water molecules. I won't let you do that" $err_tried_to_fix_all_waters
+fi
+
+echo "*** Fixing the solute and $nwat_to_fix water molecules, leaving $nwat_opt water molecules to relax."
+
+# More arithmetics
+let "nwatat_to_fix=nwat_to_fix*3"
+let "ntotat_to_fix=nwatat_to_fix+nsolat"
+
+echo "*** All in all, fixing $ntotat_to_fix atoms ($nsolat solute atoms, $nwatat_to_fix water atoms)."
+
+# Remove results of previous, possibly failed, optimisations.
+root=`echo $xyzf | sed -r "s/\.xyz$//"`
+
+rm -f $root.[0-9]*
+rm -f $xyzf"_"[0-9]*
+rm -f *_traj.xyz
+rm -f *_qm.xyz
+rm -f *_mm.xyz
+rm -f *_optimised.xyz
+rm -f *.log
+
+# Create a suitable .key file for optimisation.
+keyf=`echo $xyzf | sed -r "s/\.xyz$/.key/"`
+
+echo "*** Generating $keyf with the following contents:"
+rm -f $keyf
+echo "save-cycle" >>$keyf
+echo "inactive -1 $ntotat_to_fix" >>$keyf
+cat $keyf
+
+# Run optimize
+prmf=`echo *.prm`
+echo "*** Running optimize on $xyzf, $keyf, $prmf..."
+( set -o pipefail; echo -e "$prmf\n$convg_threshold\n" | optimize $xyzf | tee $root.optimize.log ) || error "TINKER's 'optimize' failed" $err_in_optimize
+
+# Rename the result
+mv -f $xyzf"_2" $root"_optimised.xyz"
+
+lastframe=`ls -v $root.[0-9]* | tail -n 1 | sed -r "s/$root\.//"`
+
+# Create a trajectory .xyz
+lastframe=`ls -v $root.[0-9]* | tail -n 1 | sed -r "s/$root\.//"`
+echo "*** Frames 0..$lastframe will be merged into $root"_traj.xyz
+xyz_traj $root 0 $lastframe 1
+
+echo "*** Frames 0..$lastframe will be analyzed for properties"
+# Do properties for each frame, for the entire system, the solute, the shell and the sphere separately.
+# Solute: calculated in isolation.
+# Sphere: calculated in isolation.
+# Shell: calculated in the presence of the core.
+echo "# 1:opt_step 2:E_entire 3:E_sphere 4:E_solute 5:E_shell_in_presence_of_core 6:E_bind_solute_to_sphere_ie_#2-#3-#4" >> $root"_energy.log"
+echo "# 1:opt_step 2:mu_entire_magn 3-5:mu_entire_{xyz} 6-9:mu_sphere 10-13:mu_solute 14-17:mu_shell_in_presence_of_core" >> $root"_dipole_moment.log"
+extralastframe=`echo $lastframe $plots_increment | awk '{if(($1 % $2)!=0) print $1}'` # add last frame if not divisible by the increment to always have the last one
+for frame in `seq 0 $plots_increment $lastframe` $extralastframe; do
+  paddedframe=`echo $frame | awk '{printf("%03d",$1)}'`
+  echo $paddedframe
+  curroot=$root"_$paddedframe"
+  curxyzf=$curroot".xyz"
+  mv $root.$paddedframe $curxyzf
+  # - Effect a solute-sphere split
+  curtagf=$curroot.tag
+  seq 1 $nsolat | tr "\n" " " >$curtagf
+  echo >>$curtagf
+  let "first_wat_at=nsolat+1"
+  seq $first_wat_at $ntotat | tr "\n" " " >>$curtagf
+  xyz_split $curxyzf $curtagf || error "Error in xyz_split" $err_in_xyz_split
+  rm -f $curtagf
+  # - the solute is the "qm" file.
+  xyzf_solute=$curroot"_qm".xyz
+  solute_dipole_moment_log=$curroot"_qm_dipole_moment.log"
+  solute_energy_log=$curroot"_qm_energy.log"
+  xyz_to_properties $xyzf_solute $prmf || error "Error in xyz_to_properties" $err_in_xyz_to_properties
+  mv -f $solute_energy_log $curroot"_energy_solute_only.log"
+  mv -f $solute_dipole_moment_log $curroot"_dipole_moment_solute_only.log"
+  # - the sphere is the "mm" file.
+  xyzf_sphere=$curroot"_mm".xyz
+  sphere_dipole_moment_log=$curroot"_mm_dipole_moment.log"
+  sphere_energy_log=$curroot"_mm_energy.log"
+  xyz_to_properties $xyzf_sphere $prmf || error "Error in xyz_to_properties" $err_in_xyz_to_properties
+  mv -f $sphere_energy_log $curroot"_energy_sphere_only.log"
+  mv -f $sphere_dipole_moment_log $curroot"_dipole_moment_sphere_only.log"
+  # - the entire system is the cur xyz file.
+  xyzf_entire=$curroot.xyz
+  entire_dipole_moment_log=$curroot"_dipole_moment.log"
+  entire_energy_log=$curroot"_energy.log"
+  xyz_to_properties $xyzf_entire $prmf || error "Error in xyz_to_properties" $err_in_xyz_to_properties
+  mv -f $entire_energy_log $curroot"_energy_entire_system.log"
+  mv -f $entire_dipole_moment_log $curroot"_dipole_moment_entire_system.log"
+  # - the shell in the presence of the core system is the cur xyz file, with
+  #   a keyfile that includes a suitable 'inactive' keyword.
+  echo "inactive -1 $ntotat_to_fix" >$curroot.key
+  xyzf_entire=$curroot.xyz
+  shell_dipole_moment_log=$curroot"_dipole_moment.log"
+  shell_energy_log=$curroot"_energy.log"
+  xyz_to_properties $xyzf_entire $prmf || error "Error in xyz_to_properties" $err_in_xyz_to_properties
+  mv -f $shell_energy_log $curroot"_energy_shell_in_presence_of_core.log"
+  mv -f $shell_dipole_moment_log $curroot"_dipole_moment_shell_in_presence_of_core.log"
+  rm $curroot.key
+
+  rm -f *_mm.xyz
+  rm -f *_qm.xyz
+  rm -f $curxyzf
+  E_entire=`cat $curroot"_energy_entire_system.log" | awk '{print $2}'`
+  E_sphere=`cat $curroot"_energy_sphere_only.log" | awk '{print $2}'`
+  E_solute=`cat $curroot"_energy_solute_only.log" | awk '{print $2}'`
+  E_shell=`cat $curroot"_energy_shell_in_presence_of_core.log" | awk '{print $2}'`
+  echo $frame $E_entire $E_sphere $E_solute $E_shell | awk '{print $1,$2,$3,$4,$5,$2-$3-$4}' >> $root"_energy.log"
+
+  mu_entire=`cat $curroot"_dipole_moment_entire_system.log" | awk '{print $2,$3,$4,$5}'`
+  mu_sphere=`cat $curroot"_dipole_moment_sphere_only.log" | awk '{print $2,$3,$4,$5}'`
+  mu_solute=`cat $curroot"_dipole_moment_solute_only.log" | awk '{print $2,$3,$4,$5}'`
+  mu_shell=`cat $curroot"_dipole_moment_shell_in_presence_of_core.log" | awk '{print $2,$3,$4,$5}'`
+  echo $frame $mu_entire $mu_sphere $mu_solute $mu_shell | awk '{printf("%4d  %6.3f  %6.3f %6.3f %6.3f     %6.3f  %6.3f %6.3f %6.3f    %6.3f  %6.3f %6.3f %6.3f    %6.3f  %6.3f %6.3f %6.3f\n",$1, $2,$3,$4,$5, $6,$7,$8,$9, $10,$11,$12,$13, $14,$15,$16,$17)}' >> $root"_dipole_moment.log"
+
+done
+
+# Clean up and rename
+rm $keyf
+rm -f $root.[0-9]*
+rm -f *_[0-9][0-9][0-9]*_*.log

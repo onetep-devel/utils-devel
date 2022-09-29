@@ -1,0 +1,37 @@
+--- /home/jd12g09/install/tinker713_original/tinker/source/empole3.f	2015-05-08 21:57:53.000000000 +0100
++++ /home/jd12g09/install/tinker70/source/patched/empole3.f	2017-05-12 17:36:42.000000000 +0100
+@@ -137,0 +138 @@
++      real*8, parameter :: same_at_thresh=1D-5
+@@ -252,0 +254,4 @@
++                  if(r .lt. same_at_thresh) then
++                    r = same_at_thresh
++                    r2 = r*r
++                  end if
+@@ -391 +396 @@
+-     &                             f10.4,2x,2f12.4)
++     &                             f10.4,2x,2f20.12)
+@@ -486,0 +492 @@
++                  write(*,*) '@NEWDEBUG-1 ', r2, kk, ii
+@@ -632 +638 @@
+-     &                             '(X)',5x,f10.4,2x,2f12.4)
++     &                             '(X)',5x,f10.4,2x,2f20.12)
+@@ -881,0 +888 @@
++              write(*,*) '@NEWDEBUG-2 ', r2, kk, ii
+@@ -1022 +1029 @@
+-     &                             f10.4,2x,2f12.4)
++     &                             f10.4,2x,2f20.12)
+@@ -1371,0 +1379 @@
++                  write(*,*) '@NEWDEBUG-3 ', r2, kk, ii
+@@ -1531 +1539 @@
+-     &                          f10.4,2x,2f12.4)
++     &                          f10.4,2x,2f20.12)
+@@ -1607,0 +1616 @@
++                  write(*,*) '@NEWDEBUG-4 ', r2, kk, ii
+@@ -1768 +1777 @@
+-     &                          '(X)',5x,f10.4,2x,2f12.4)
++     &                          '(X)',5x,f10.4,2x,2f20.12)
+@@ -2131,0 +2141 @@
++                  write(*,*) '@NEWDEBUG-5 ', r2, kk, ii
+@@ -2291 +2301 @@
+-     &                          f10.4,2x,2f12.4)
++     &                          f10.4,2x,2f20.12)

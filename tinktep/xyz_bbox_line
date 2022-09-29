@@ -1,0 +1,92 @@
+#!/bin/bash
+################################################################################
+# A part of TINKTEP, an interface between ONETEP and TINKER.                   #
+# Jacek Dziedzic, University of Southampton, May-December 2015.                #
+################################################################################
+
+################################################################################
+# *** xyz_bbox_line ***
+# Checks is a TINKER .xyz file contains a bounding box line.
+#
+# Only single-frame .xyz files are supported (no trajectories/archives).
+# Returns a single line of output, containing four numbers. 
+# If the fourth number is 0, the .xyz file did not specify a bounding box line. 
+# If the fourth number is 1, the .xyz file did specify a cubic bounding box, 
+# and the first three numbers are the length of the cube in Angstrom,
+# repeated three times.
+# If the fourth number is 2, the .xyz file specified a cuboid box and the
+# columns are the box dimensions. 
+# In all the above cases the return code is zero.
+#
+# Non-zero return codes indicate error conditions. The presence of a bounding
+# box whose angles are not all numerically equal to 90.0 is treated as an error.
+#
+# v1.00
+# Jacek Dziedzic, May-December 2015.
+################################################################################
+# Revision history:
+# v1.00 2016.01.22 -- initial revision
+################################################################################
+
+myname="xyz_bbox_line"
+
+#-------------------------------------------------------------------------------
+# Aborts, printing a message and returning an error code.
+#-------------------------------------------------------------------------------
+function error() {
+  echo "!!! $myname: ERROR #$2: $1. Aborting!" >&2
+  exit $2
+}
+#-------------------------------------------------------------------------------
+
+################################################################################
+# Error codes
+################################################################################
+err_improper_invocation=101
+err_xyzf_unreadable=102
+err_malformed_bbox_line=103
+err_box_skewed=104
+
+################################################################################
+# main()
+################################################################################
+
+if [ $# -ne 1 ]; then
+  error "Improper invocation. Supply one argument: the name of the TINKER .xyz file" $err_improper_invocation
+fi
+
+xyzf=$1
+
+if [ ! -r $xyzf ]; then
+  error "$xyzf does not exist or is unreadable" $err_xyzf_unreadable
+fi
+
+# See if there's a BBox line in the .xyz file -- it will contain no alphanumeric characters, except maybe E, e, D or d (1E+02, 1d0, etc).
+bbox_line_present=`head -n 2 $xyzf | tail -n 1 | awk '{if($0 ~ "[ABCFGHIJKLMNOPQRSTUVWXYZabcfghijklmnopqrstuvwxyz]") print 0; else print 1}'`
+
+# No BBox line
+if [ "$bbox_line_present" == "0" ]; then
+  echo 0 0 0 0
+  exit 0
+fi
+
+# Otherwise...
+bbox_line=`head -n 2 $xyzf | tail -n 1 `
+n_cols=`echo $bbox_line | awk '{print NF}'`
+
+if [ "$n_cols" != "6" ]; then
+  error "Malformed BBox line in $xyzf. Expecting 6 columns, got $n_cols" $err_malformed_bbox_line
+fi
+
+angles_all_90=`echo $bbox_line | awk '{if($4 == 90.0 && $5 == 90.0 && $6 == 90.0) print 1; else print 0}'`
+
+if [ "$angles_all_90" != "1" ]; then
+  error "Only cubic or cuboid boxes are supported. THe BBox line in $xyzf specifies at least one non-right angle" $err_box_skewed
+fi
+
+box_cubic=`echo $bbox_line | awk '{if($1 == $2 && $1 == $3) print 1; else print 0}'`
+if [ "$box_cubic" == "1" ]; then
+  echo $bbox_line | awk '{print $1,$1,$1,1}'
+else
+  echo $bbox_line | awk '{print $1,$2,$3,2}'
+fi

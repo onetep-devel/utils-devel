@@ -1,0 +1,5 @@
+--- /home/jd12g09/install/tinker713_original/tinker/source/ebond3.f	2015-05-08 21:57:54.000000000 +0100
++++ /home/jd12g09/install/tinker70/source/patched/ebond3.f	2016-01-14 13:39:41.000000000 +0000
+@@ -140 +140 @@
+-   20          format (' Bond',6x,2(i7,'-',a3),13x,2f10.4,f12.4)
++   20          format (' Bond',6x,2(i7,'-',a3),13x,2f10.4,f17.9)

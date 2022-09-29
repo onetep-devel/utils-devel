@@ -1,0 +1,80 @@
+#!/bin/bash
+################################################################################
+# A part of TINKTEP, an interface between ONETEP and TINKER.                   #
+# Jacek Dziedzic, University of Southampton, May-December 2015.                #
+################################################################################
+
+################################################################################
+# *** atom_number_to_fixed_charge ***
+# Returns the fixed_charge associated with a type corresponding to a given
+# atom number (index). This is meant for fixed-charge force fields, which
+# define 'charge' entries in the .prm file.
+#
+# v1.01
+# Jacek Dziedzic, September-November 2015.
+################################################################################
+# Revision history:
+# v1.00 2016.04.28 -- Based on atom_number_to_polarisability.
+# v1.01 2017.09.20 -- Removed vestigious error codes referring to tag files.
+################################################################################
+
+myname="atom_number_to_fixed_charge"
+
+#-------------------------------------------------------------------------------
+# Aborts, printing a message and returning an error code.
+#-------------------------------------------------------------------------------
+function error() {
+  echo "!!! $myname: ERROR #$2: $1. Aborting!" >&2
+  exit $2
+}
+#-------------------------------------------------------------------------------
+
+################################################################################
+# Error codes
+################################################################################
+err_improper_invocation=101
+err_unable_to_obtain_type=102
+err_xyz_file_unreadable=103
+err_prm_file_unreadable=104
+err_unable_to_obtain_fixed_charge=105
+err_bbox=106
+
+################################################################################
+# main()
+################################################################################
+
+if [ $# -ne 3 ]; then
+  error "Improper invocation. Supply three arguments: the name of the xyz file (either the main one or the _qm_mm.xyz), atom number, and the name of the .prm file" $err_improper_invocation
+fi
+
+xyzf=$1
+natom=$2
+prmf=$3
+
+# Sanity check on the presence of the input xyz file
+if [ ! -r "$xyzf" ]; then
+  error "Xyz file '$xyzf' does not exist or is unreadable" $err_xyz_file_unreadable
+fi
+
+# See if there's a BBox line in the xyz file -- it will contain no alphanumeric characters, except maybe E, e, D or d (1E+02, 1d0, etc).
+bbox_line=`xyz_bbox_line $xyzf` || error "Could not verify the presence of, or parse, the BBox line in the .xyz file $xyzf" $err_bbox
+bbox_line_present=`echo $bbox_line | awk '{print ($4 > 0)}'`
+
+# Obtain the TINKER atom type corresponding to the atom index
+let "firstatomline=2+bbox_line_present"
+ntype=`tail -n +$firstatomline $xyzf | awk -v natom=$natom '{if($1 == natom) print $6}'`
+
+if [ -z "$ntype" ]; then
+  error "Unable to obtain a force field type corresponding to atom index '$natom'. Most likely atom is absent in $xyzf" $err_unable_to_obtain_type
+fi
+
+# Find the fixed charge in the FF file
+if [ -r "$prmf" ]; then
+  fixedcharge=`cat $prmf | awk -v ntype=$ntype '{if($1 == "charge" && $2==ntype) print $3}'`
+  if [ -z "$fixedcharge" ]; then
+    error "Unable to obtain the fixed charge of atom type $ntype deemed to correspond to atom index $natom" $err_unable_to_obtain_fixed_charge
+  fi
+  echo $fixedcharge
+else
+  error "FF param file '$prmf' does not exist or is unreadable" $err_prm_file_unreadable
+fi

@@ -1,0 +1,223 @@
+#!/bin/bash
+################################################################################
+# A part of TINKTEP, an interface between ONETEP and TINKER.                   #
+# Jacek Dziedzic, University of Southampton, May-December 2015.                #
+################################################################################
+
+################################################################################
+# *** water_balance ***
+# ------------------------------------------------------------------------------
+# In mode 1 (default mode of operation):
+# Creates a .tag file that will effect a split of a .xyz file into two parts,
+# first one being a solute with a number of surrounding water molecules, and
+# the second one being the remaining (outermost) water molecules.
+# ------------------------------------------------------------------------------
+# In mode 2 (selected by using 'mode2' as an extra, final argument):
+# Creates a .tag file that will effect a split of a .xyz file into two parts,
+# first one being a solute, the second one is a number of surrounding water 
+# molecules, and an ignored part (third line) being the remaining (outermost) 
+# water molecules.
+# ------------------------------------------------------------------------------
+#
+# The following is true in both modes:
+# xyz_sort_waters is used to sort the waters depending on their distance from
+# the solute centre (or a centre specified in the header of the .xyz file).
+#
+# Either a fixed number of water molecules can be kept,
+# or
+# all water molecules can be kept,
+# or
+# water molecules whose centres are closer than a given distance to the centre
+# can be kept. This is determined from the histogram created by xyz_sort_waters.
+# 
+# For example:
+# use 120 to retain 120 water molecules.
+# use -1 to retain all waters.
+# use - 13.0 to retain all waters whose centers are closer than 13.0 to the centre.
+# Either of the above can be switched to mode 2 by adding 'mode2' to the list of args.
+#
+# v1.07
+# Jacek Dziedzic, May-December 2015.
+################################################################################
+# Revision history:
+# v1.00 2016.01.?? -- Initial version.
+# v1.01 2016.01.25 -- Cleanup, use of xyz_bbox_line, error codes.
+# v1.05 2016.03.22 -- Adds mode 2 operation.
+# v1.06 2016.05.13 -- Removed dependence on getcol.
+# v1.07 2016.07.25 -- Checks that the input files are readable.
+# v1.08 2016.09.15 -- More robust xyz->tag extension replacement in filename.
+################################################################################
+
+myname="water_balance"
+
+#-------------------------------------------------------------------------------
+# Aborts, printing a message and returning an error code.
+#-------------------------------------------------------------------------------
+function error() {
+  echo "!!! $myname: ERROR #$2: $1. Aborting!" >&2
+  exit $2
+}
+#-------------------------------------------------------------------------------
+
+################################################################################
+# Error codes
+################################################################################
+err_improper_invocation=101
+err_in_xyz_sort_waters=102
+err_histofile_unreadable=103
+err_not_enough_atoms_mode_1=104
+err_not_enough_atoms_mode_2=105
+err_nsolat=106
+err_inxyzfile_unreadable=107
+err_prmfile_unreadable=108
+
+################################################################################
+# main()
+################################################################################
+
+if [ $# -ne 3 ] && [ $# -ne 4 ]; then
+  error "Improper invocation. Supply a name of the TINKER .xyz file, the name of a .prm file, and\
+ either the number of closest H2O molecules to keep, or\
+ -1 (too keep all), or - <dist>, to keep waters within <dist> Angstrom from the solute centre. \
+ Note the space after the minus in the latter case. Optionally add 'mode2' as final parameter \
+ (regardless of the scenario above) to put waters in the MM region instead" $err_improper_invocation
+fi
+
+fin=$1
+fsort=$fin".out_xyz"
+fprm=$2
+nwat=$3
+
+eval lastparam=\${$#}
+
+if [ ! -r $fin ]; then
+  error "$fin absent or unreadable" $err_inxyzfile_unreadable
+fi
+
+if [ ! -r $fprm ]; then
+  error "$fprm absent or unreadable" $err_prmfile_unreadable
+fi
+
+if [ "$lastparam" == "mode2" ]; then
+  echo "Operating in mode2."
+  mode="2"
+else
+  mode="1"
+fi
+
+# Sort the waters into closest-first order
+xyz_sort_waters $fin $fprm -1 || error "xyz_sort_waters failed" $err_in_xyz_sort_waters
+
+echo ""
+
+# If '-' specified for nwat, examine the histogram file to pick the necessary number of waters
+if [ "$nwat" == "-1" ]; then
+  echo "Extracting ALL water molecules."
+fi
+
+if [ "$nwat" == "-" ]; then
+  histofile=$fin.water_distance_histogram.txt
+  if [ ! -r $histofile ]; then
+    error "$histofile absent or unreadable" $err_histofile_unreadable
+    exit 2
+  else
+    dist=$4
+    echo "Extracting water molecules within $dist from the solute centre."
+    nwat=`cat $histofile | awk -v dist=$dist '
+    {
+      if($2 > dist) {
+        print ($1-1);
+        exit;
+      }
+    }'`
+    if [ -z "$nwat" ]; then
+      echo "Looks like this includes all water molecules."
+      nwat=-1
+    else
+      echo "There are $nwat of these."
+    fi
+  fi
+fi
+
+# Create a tag file with the following split:
+# [mode 1]: Solute and nwat waters in the QM region (with MM region encompassing the remainder)
+# [mode 2]: Solute in the QM region, nwat waters in the MM region, remainder dropped (added to the ignored atom list)
+# Mode 1 is the usual.
+ftag=`echo $fin | sed -r "s/(\.[^.]*)?$/.tag/"` # extension replacement that works even with multiple . and also degenerates into a suffix if there was no extension to begin with
+n_sol_atoms=`xyz_count_solute_atoms $fsort` || error "Could not determine the number of solute atoms in $fsort" $err_nsolat
+n_tot_atoms=`head -n 1 $fsort | awk '{print $1}'`
+rm -f $ftag
+
+if [ "$mode" == "1" ]; then
+  # --- mode 1 ---
+  if [ "$nwat" == "-1" ]; then
+    let "n_qm_atoms=n_tot_atoms"
+  else  
+    let "n_qm_atoms=n_sol_atoms+3*nwat"
+  fi
+
+  if [ $n_qm_atoms -gt $n_tot_atoms ]; then
+    error "Not enough atoms in $fin to extract $nwat water molecules. It looks like there are $n_tot_atoms total atoms, and you asked to extract $n_qm_atoms into the QM region" $err_not_enough_atoms_mode_1
+  fi
+
+  for i in `seq 1 $n_qm_atoms`; do
+    echo -n "$i " >>$ftag
+  done
+  echo >>$ftag
+
+  if [ "$n_qm_atoms" == "$n_tot_atoms" ]; then
+    echo "-1" >>$ftag
+  else
+    let "first_mm_atom=n_qm_atoms+1"
+    for i in `seq $first_mm_atom $n_tot_atoms`; do
+      echo -n "$i " >>$ftag
+    done
+  fi  
+else
+  # --- mode 2 ---
+  let "n_qm_atoms=n_sol_atoms"
+  if [ "$nwat" == "-1" ]; then
+    let "n_mm_atoms=n_tot_atoms-n_sol_atoms"
+  else  
+    let "n_mm_atoms=3*nwat"
+  fi
+
+  # QM atoms
+  if [ "$n_qm_atoms" == "0" ]; then
+    echo -n "-1" >>$ftag
+  else
+    for i in `seq 1 $n_qm_atoms`; do
+      echo -n "$i " >>$ftag
+    done
+  fi
+  echo >>$ftag
+
+  # MM atoms
+  if [ "$n_mm_atoms" == "0" ]; then
+    echo -n "-1" >>$ftag
+    let "last_mm_atom=$n_qm_atoms"
+  else
+    let "first_mm_atom=n_qm_atoms+1"
+    let "last_mm_atom=first_mm_atom+n_mm_atoms-1"
+    for i in `seq $first_mm_atom $last_mm_atom`; do
+      echo -n "$i " >>$ftag
+    done
+  fi  
+
+  if [ $last_mm_atom -gt $n_tot_atoms ]; then
+    error "Not enough atoms in $fin to extract $nwat water molecules. It looks like there are $n_tot_atoms total atoms, and you asked to extract $n_mm_atoms ($first_mm_atom..$last_mm_atom) into the MM region" $err_not_enough_atoms_mode_2
+  fi
+
+  # ignored atoms
+  let "first_ign_atom=last_mm_atom+1"
+  let "last_ign_atom=n_tot_atoms"
+  if [ $last_ign_atom -ge $first_ign_atom ]; then
+    echo >>$ftag
+    for i in `seq $first_ign_atom $last_ign_atom`; do
+      echo -n "$i " >>$ftag
+    done
+  else
+    # Nothing to do. Do not output the newline.
+    true
+  fi
+fi

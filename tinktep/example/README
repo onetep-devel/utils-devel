@@ -1,0 +1,30 @@
+============================================================================
+This is a fully functional example calculation for TINKTEP -- a QM/MM 
+interface for ONETEP and TINKER.
+
+The example is a water dimer calculation, where one of the water molecules
+is in the QM subsystem, and the other water molecule is in the MM subsystem.
+The model is TINKTEP2 (with MM repulsive potential). There is mutual,
+fully self-consistent polarisation between QM and MM. 
+
+To run the calculation:
+1. Obtain a copy of TINKER v7.0. This should be available at no cost from 
+   Jay Ponder's website. It is imperative that you use v7.0 or else the 
+   patches supplied with ONETEP will not work.
+2. Patch your copy of TINKER using the set of patches located in 
+   utils/tinktep/tinktep_patches. Make sure they all applied correctly.
+3. Compile and install your patched copy of TINKER.
+4. Ensure that at least the following executables from the TINKER suite 
+   can be found in your PATH: analyze, dynamic, poledit.
+5. Compile ONETEP v4.5.18.8 or later.
+6. Ensure all scripts supplied in utils/tinktep can be found in your PATH.
+7. Copy your ONETEP executable to "onetep.exe" in this directory.
+8. Copy amoeba09.prm (provided by your TINKER distrib'n) to this directory.
+9. Type "tinktep" and hit enter.
+
+The calculation should complete in under an hour on a desktop machine.
+It should converge in 29 NGWF iterations (quite a lot, because of the 
+steepness of the MM repulsive potential).
+
+Created by Jacek Dziedzic, University of Southampton, May 2018.
+============================================================================

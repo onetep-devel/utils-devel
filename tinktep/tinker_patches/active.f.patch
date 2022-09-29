@@ -1,0 +1,10 @@
+--- /home/jd12g09/install/tinker713_original/tinker/source/active.f	2015-05-08 21:57:54.000000000 +0100
++++ /home/jd12g09/install/tinker70/source/patched/active.f	2016-01-14 14:48:20.000000000 +0000
+@@ -35,2 +35,2 @@
+-      character*120 record
+-      character*120 string
++      character*12000 record
++      character*12000 string
+@@ -73 +73 @@
+-         string = record(next:120)
++         string = record(next:12000)

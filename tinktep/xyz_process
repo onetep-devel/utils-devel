@@ -1,0 +1,200 @@
+#!/bin/bash
+################################################################################
+# A part of TINKTEP, an interface between ONETEP and TINKER.                   #
+# Jacek Dziedzic, University of Southampton, May-December 2015.                #
+################################################################################
+
+################################################################################
+# *** xyz_process ***
+# Merges a QM TINKER .xyz file and an MM TINKER .xyz file renumbering QM
+# atom types accordingly.
+#
+# v1.12
+# Jacek Dziedzic, May-December 2015.
+################################################################################
+# Revision history:
+# v1.01 2015.??.?? -- Uses config, error codes, migrates renumber_offset to config file.
+# v1.02 2015.12.22 -- Cleaned up, improved documentation.
+# v1.10 2016.01.12 -- Supports BBoxes in .xyz files
+# v1.11 2016.01.14 -- Bugfix for the above.
+# v1.12 2016.01.25 -- Uses xyz_bbox_line.
+# v1.13 2017.05.12 -- Supports qm_dummy_atoms.
+################################################################################
+
+configfile="tinktep.config"
+myname="xyz_process"
+dummy_atom_symbol="J"
+
+#-------------------------------------------------------------------------------
+# Aborts, printing a message and returning an error code.
+#-------------------------------------------------------------------------------
+function error() {
+  echo "!!! $myname: ERROR #$2: $1. Aborting!" >&2
+  exit $2
+}
+#-------------------------------------------------------------------------------
+
+################################################################################
+# Error codes
+################################################################################
+err_config_file=101
+err_config_file_directive_renumber_offset=102
+err_improper_invocation=103
+err_misnamed_qm_xyz_file=104
+err_misnamed_mm_xyz_file=105
+err_out_file_already_exists=106
+err_qm_xyz_file_unreadable=107
+err_mm_xyz_file_unreadable=108
+err_bad_magic_in_qm_xyz_file=109
+err_bad_magic_in_mm_xyz_file=110
+err_bbox_presence_inconsistent=111
+err_bbox_inconsistent=112
+err_bbox_qm=113
+err_bbox_mm=113
+
+#-------------------------------------------------------------------------------
+# Parses the config file
+#-------------------------------------------------------------------------------
+function parse_config() {
+  if [ ! -r $configfile ]; then
+    error "Cannot read $configfile" $err_config_file
+  fi
+
+  if [ `cat $configfile | tr "\t" " " | sed -r "s/ +/ /g" | grep -Ec "^renumber_offset"` != 1 ]; then
+    error "Setting 'renumber_offset' is not defined, or is defined multiply, in $configfile" $err_config_file_directive_renumber_offset
+  fi
+  opt_renumber_offset=`cat $configfile | tr "\t" " " | sed -r "s/ +/ /g" | grep -E "^renumber_offset" | sed "s/renumber_offset //"`
+  echo "    (Atom type renumbering offset: $opt_renumber_offset)"
+
+  opt_qm_dummy_atoms=`cat $configfile | tr "\t" " " | sed -r "s/ +/ /g" | grep -Ec "^qm_dummy_atoms" | awk '{if($1>0) print "1"; else print "0";}'`
+  if [ $opt_qm_dummy_atoms == "1" ]; then
+    echo "    (Dummy QM atoms corresponding to MM atoms will be handled)"
+  fi
+
+}
+
+################################################################################
+# main()
+################################################################################
+
+parse_config
+
+if [ $# -ne 2 ]; then
+  error "Improper invocation. Supply two arguments: the names of the TINKER .xyz files for QM and MM parts, respectively" $err_improper_invocation
+fi
+
+qmxyzfile=$1
+mmxyzfile=$2
+
+# Extract last seven characters of input filenames
+qmxyzfile_ext=`echo $qmxyzfile | sed -r "s/.*(.......)$/\1/"`
+mmxyzfile_ext=`echo $mmxyzfile | sed -r "s/.*(.......)$/\1/"`
+
+# Ensure they are as expected, for a safe replace later in determining
+# the output filenames.
+if [ "$qmxyzfile_ext" != "_qm.xyz" ]; then
+  error "Expecting the TINKER .xyz file for the QM part to be named '*_qm.xyz'" $err_misnamed_qm_xyz_file
+fi
+if [ "$mmxyzfile_ext" != "_mm.xyz" ]; then
+  error "Expecting the TINKER .xyz file for the MM part to be named '*_mm.xyz'" $err_misname_mm_xyz_file
+fi
+
+# Generate output filename
+outxyzfile=`echo $qmxyzfile | sed -r "s/_qm\.xyz$/_qm_mm.xyz/"`
+
+padding=`echo $myname | sed "s/./ /g"`" "
+echo "*** $myname: Input QM .xyz file:    $qmxyzfile."
+echo "    $padding Input MM .xyz file:    $mmxyzfile."
+
+# Ensure output file does not exist
+if [ -e $outxyzfile ]; then
+  error "$outxyzfile already exists, I'm afraid to overwrite it" $err_out_file_already_exists
+fi
+
+echo "    $padding Output QM/MM key file: $outxyzfile."
+
+# Ensure input files exist and are readable
+if [ ! -r $qmxyzfile ]; then
+  error "$qmxyzfile does not exist or is not readable" $err_qm_xyz_file_unreadable
+fi
+
+if [ ! -r $mmxyzfile ]; then
+  error "$mmxyzfile does not exist or is not readable" $err_mm_xyz_file_unreadable
+fi
+
+# Sanity check on QM file header
+header=`head -n 1 $qmxyzfile`
+magic=`echo $header | awk '{print $2,$3,$4}'`
+n_qm_atoms=`echo $header | awk '{print $1}'`
+
+if [ "$magic" != "QM part of" ]; then
+  error "Expecting the comment in $qmxyzfile to read 'QM part of...'. Got '$magic' instead" $err_bad_magic_in_qm_xyz_file
+fi
+
+# Sanity check on MM file header
+header=`head -n 1 $mmxyzfile`
+magic=`echo $header | awk '{print $2,$3,$4}'`
+n_mm_atoms=`echo $header | awk '{print $1}'`
+
+if [ "$magic" != "MM part of" ]; then
+  error "Expecting the comment in $mmxyzfile to read 'MM part of...'. Got '$magic' instead" $err_bad_magic_in_mm_xyz_file
+fi
+
+# See if there's a BBox line in the .xyz file -- it will contain no alphanumeric characters, except maybe E, e, D or d (1E+02, 1d0, etc).
+qm_bbox_line=`xyz_bbox_line $qmxyzfile` || error "Could not verify the presence of, or parse, the BBox line in the QM .xyz file $qmxyzfile" $err_bbox_qm
+mm_bbox_line=`xyz_bbox_line $mmxyzfile` || error "Could not verify the presence of, or parse, the BBox line in the MM .xyz file $mmxyzfile" $err_bbox_mm
+qm_bbox_line_present=`echo $qm_bbox_line | awk '{print ($4 > 0)}'`
+mm_bbox_line_present=`echo $qm_bbox_line | awk '{print ($4 > 0)}'`
+
+if [ "$qm_bbox_line_present" != "$mm_bbox_line_present" ]; then
+  error "Box dimensions must either be present in both $qmxyzfile and $mmxyzfile or in neither" $err_bbox_presence_inconsistent
+fi
+
+echo "    $padding Box dimensions present? "`echo $mm_bbox_line_present | sed -e "s/2/Yes (cuboid)./" -e "s/1/Yes (cubic)./" -e "s/0/No./"`
+
+if [ "$qm_bbox_line_present" == "1" ]; then
+  # Ensure the BBox line matches between the QM and MM .xyz files
+  if [ "$qm_bbox_line" != "$mm_bbox_line" ]; then
+    error "Box dimensions are inconsistent between $qmxyzfile and $mmxyzfile. They should match to every character" $err_bbox_inconsistent
+  fi
+fi
+
+# Produce header of output QM/MM .xyz file
+let "n_atoms=n_qm_atoms+n_mm_atoms"
+echo $n_atoms | awk '{printf("%6d",$1)}' >$outxyzfile
+echo $header | sed -r "s/ *[0-9]* *MM part of/  QM\/MM for/" >>$outxyzfile
+
+# If BBox present, copy it over from MM .xyz file
+if [ "$mm_bbox_line_present" == "1" ]; then
+  echo $mm_bbox_line >>$outxyzfile
+fi
+
+let "firstatomline=2+mm_bbox_line_present"
+
+# Renumber atom types that go into the QM/MM .xyz file.
+tail -n +$firstatomline $qmxyzfile | awk -v offset=$opt_renumber_offset -v n_mm_atoms="$n_mm_atoms" -v opt_qm_dummy_atoms="$opt_qm_dummy_atoms" '
+{
+  pos1=match($0,"[ \t]*[0-9]*[ \t]*");
+  skip1=RLENGTH;
+  pos2=match($0,"[ \t]*[0-9]*[ \t]*[^ \t]*[ \t]*[^ \t]*[ \t]*[^ \t]*[ \t]*[^ \t]*[ \t]*");
+  skip2=RLENGTH;
+  # if(opt_qm_dummy_atoms == 0) {
+  # print "zero"
+  #    iatom=NR;
+  # }
+  #  else {
+  #    print "nonzero"
+  #    iatom=NR+n_mm_atoms;
+  # }
+  iatom=$1;
+  printf("%6d %s %3d %s\n",iatom, substr($0,skip1,skip2-skip1), NR+offset,substr($0,55));
+}' >$outxyzfile.qm_part
+
+# Collate QM part and MM part, sort atoms (ascending indices). Stick this past the header.
+tail -n +$firstatomline $mmxyzfile >$outxyzfile.mm_part
+cat $outxyzfile.mm_part $outxyzfile.qm_part | sort -gk1 >>$outxyzfile
+
+# Clean up temporary files
+rm -f $outxyzfile.qm_part $outxyzfile.mm_part
+
+echo "    $padding SUCCESS"

@@ -1,0 +1,15 @@
+==========================================================================
+This directory contains script files and an example config file
+for TINKTEP -- the QM/MM interface for ONETEP and TINKER.
+
+Also provided are patches that can be applied to a copy of TINKER
+(not distributed here) to make it compatible with TINKTEP.
+
+Also provided is a full working example for a QM/MM calculation.
+
+This functionality is work in progress and no support is offered
+at this time. It also requires a customised copy of TINKER to run
+correctly, so it is unlikely to be usable to you at the moment.
+
+Written by Jacek Dziedzic, University of Southampton, May 2015-May 2018.
+==========================================================================
