@@ -1,0 +1,83 @@
+#!/bin/bash
+
+#####################################################################
+# Extracts atomic charges (Mulliken, NPA/NBO or DDEC)               #
+# from a ONETEP .out file.                                          #
+#                                                                   #
+# Additionally, if an .xyz file exists, it is used, together with   #
+# the charges to generate a .vtf file that is readily understood by #
+# VMD and where 'Coloring method -> charge' simply works.           #
+#                                                                   #
+# 2021.05.16 Jacek Dziedzic, University of Southampton              #
+# v1.00                                                             #
+# v1.10 bugfix: off-by-one in .vtf output (indices must be 0-based).#
+#####################################################################
+
+if [ $# -ne 1 ]; then
+  echo "Improper invocation. Supply the name of a ONETEP .out file as the sole argument. Aborting!" >&2
+  exit 1
+fi
+
+fin="$1"
+
+# Determine a suitable name for the charge file (output of this script)
+fcharge=`echo $fin | sed -r "s/.out$/.charge/"`
+if [ "$fin" == "$fcharge" ]; then
+  fcharge="$fin".charge
+fi
+
+# Parse the .out file and find the header for the charges. 
+# The first one is for Mullikens, the second one -- for NPA.
+startline=`cat $fin | grep -nE "(Species  Ion    Total   Charge|   Atom        Population)" | tail -n 1 | tr ":" " " | awk '{print $1+1}'`
+
+# Move past header and also check if startline was 0 or not a number -- that indicates an error.
+let "startline++"
+if [ "$startline" == "1" ]; then
+  echo "Something went wrong trying to locate the output charges." >&2
+  echo "Check if $fin is present and readable and if the charges are there. Aborting!" >&2
+  exit 2
+fi
+
+# Copy the charges (column 4) from after the header until we reach a terminating line 
+# (=== for Mullikens, --- for NPA)
+cat $fin | awk -v startline=$startline '
+{
+  if(NR>=startline) {
+    if($0 ~ "===" || $0 ~ "---") exit;
+    print $4;
+  }
+}' >$fcharge
+
+echo "Charges were output to $fcharge."
+
+# Now, check if there's a xyz file with the coordinates.
+# If so, convert it, together with the charge file, into a form
+# understandable by VMD (.vtf).
+
+fxyz=`echo $fin | sed -r "s/.out$/.xyz/"`
+
+if [ ! -r "$fxyz" ]; then
+  echo "Could not find $fxyz. A .vtf file will not be created." >&2
+  exit 3
+fi
+
+# Determine a suitable name for the .vtf file.
+fvtf=`echo $fxyz | sed -r "s/.xyz$/.vtf/"`
+
+echo "The files $fxyz and $fcharge will be used to construct $fvtf".
+
+natoms=`head -n 1 $fxyz`
+
+cat $fcharge | awk '{
+  print "atom ", NR-1, " charge ", $1
+}' >$fvtf
+
+echo "timestep" >>$fvtf
+
+cat $fxyz | awk '{
+  if(NR>2) {
+    print $2,$3,$4
+  }
+}' >>$fvtf
+
+echo "Load $fvtf into VMD and select 'Coloring method -> charge'."

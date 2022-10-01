@@ -1,0 +1,151 @@
+#!/bin/bash
+
+# v4.0, rewrite. 2021.02.18 jack.erede@gmail.com
+
+echo "dxsection: produces a 1D cross-section through a (cuboid) .dx file along a Cartesian direction."
+
+improper_invocation() {
+  echo "Improper invocation. Syntax:" >&2
+  echo "  dxsection x|y|z <c1> <c2>" >&2
+  echo "  or">&2
+  echo "  dxsection <c1> <c2>" >&2
+  echo "  or">&2
+  echo "  dxsection x|y|z" >&2
+  echo >&2
+  echo "  <c1> and <c2> specify the values of the fixed coordinates in the cross-section." >&2
+  echo "  x or y or z specifies the coordinate along which we cross sect." >&2
+  echo "  Defaults are the middle of the box for <c1> and <c2>, and x for the coordinate." >&2
+  exit 1
+}
+
+# ----------------------------------------------------------------------------
+# ----------------------------------------------------------------------------
+
+if [ $# -eq 3 ]; then
+  coord=$1
+  c1=$2
+  c2=$3
+elif [ $# -eq 2 ]; then
+  coord="x"
+  c1=$1
+  c2=$2
+  echo "Using the default coordinate (x) for cross-secting."
+elif [ $# -eq 1 ]; then
+  coord=$1
+  c1="middle"
+  c2="middle"
+  echo "Using the default (middle of the box) for the fixed coordinates."
+elif [ $# -eq 0 ]; then
+  coord="x"
+  c1="middle"
+  c2="middle"
+  echo "Using the default (middle of the box) for the fixed coordinates and the default coordinate (x) for cross-secting."
+else
+  improper_invocation
+fi
+
+coord=`echo $coord | tr "XYZ" "xyz"` # tolower()
+
+if [ "$coord" != "x" ] && [ "$coord" != "y" ] && [ "$coord" != "z" ]; then
+  improper_invocation
+fi 
+
+# ----------------------------------------------------------------------------
+# ----------------------------------------------------------------------------
+
+for f in *.dx; do
+
+rootname=`basename $f | sed "s/\.dx//"`
+
+# get origins (box xmin, ymin, zmin)
+xorigin=`head -n 50 $f | grep origin | awk '{print $2}'`
+yorigin=`head -n 50 $f | grep origin | awk '{print $3}'`
+zorigin=`head -n 50 $f | grep origin | awk '{print $4}'`
+
+# get box length along z from ndiv and deltas
+xndiv=`head -n 50 $f | grep gridpositions | awk '{print $6}'`
+yndiv=`head -n 50 $f | grep gridpositions | awk '{print $7}'`
+zndiv=`head -n 50 $f | grep gridpositions | awk '{print $8}'`
+
+xdelta=`head -n 50 $f | grep delta | head -n 1 | awk '{print $2}'`
+ydelta=`head -n 50 $f | grep delta | head -n 2 | tail -n 1 | awk '{print $3}'`
+zdelta=`head -n 50 $f | grep delta | tail -n 1 | awk '{print $4}'`
+
+# echo $xorigin $yorigin $zorigin
+# echo $xndiv $yndiv $zndiv
+# echo $xdelta $ydelta $zdelta
+
+xlen=`echo $xndiv $xdelta | awk '{print $1*$2*0.9999}'` # 0.9999 to prevent rounding errors from dxserver falling out of grid
+ylen=`echo $yndiv $ydelta | awk '{print $1*$2*0.9999}'` # 0.9999 to prevent rounding errors from dxserver falling out of grid
+zlen=`echo $zndiv $zdelta | awk '{print $1*$2*0.9999}'` # 0.9999 to prevent rounding errors from dxserver falling out of grid
+
+if [ "$coord" == "x" ]; then
+  origin=$xorigin
+  len=$xlen
+  nd=$xndiv
+  if [ "$c1" == "middle" ]; then
+    c1=`echo $yorigin $ylen | awk '{print $1+$2*0.5}'`
+  fi
+  if [ "$c2" == "middle" ]; then
+    c2=`echo $zorigin $zlen | awk '{print $1+$2*0.5}'`
+  fi
+fi
+
+if [ "$coord" == "y" ]; then
+  origin=$yorigin
+  len=$ylen
+  nd=$yndiv
+  if [ "$c1" == "middle" ]; then
+    c1=`echo $xorigin $xlen | awk '{print $1+$2*0.5}'`
+  fi
+  if [ "$c2" == "middle" ]; then
+    c2=`echo $zorigin $zlen | awk '{print $1+$2*0.5}'`
+  fi
+fi
+
+if [ "$coord" == "z" ]; then
+  origin=$zorigin
+  len=$zlen
+  nd=$zndiv
+  if [ "$c1" == "middle" ]; then
+    c1=`echo $xorigin $xlen | awk '{print $1+$2*0.5}'`
+  fi
+  if [ "$c2" == "middle" ]; then
+    c2=`echo $yorigin $ylen | awk '{print $1+$2*0.5}'`
+  fi
+fi
+
+echo "$f: Origin at $origin A, box length along $coord: $len A, $nd divisions."
+echo "$f: Fixed coordinates: $c1 A and $c2 A."
+
+echo $len $nd $c1 $c2 $origin $coord | awk '{
+                          len=$1;
+			  nd=$2;
+                          dd=len/nd;
+			  c1=$3;
+			  c2=$4;
+			  origin=$5;
+			  coord=$6;
+			  for(i=0;i<=nd;++i) { # c0 is the value of sected coord. c1 and c2 are the remaining coords.
+                            c0=origin+i*dd
+			    if(i==0) c0<0 ? c0*=0.99999 : c0*=1.00001      # prevent rounding errors from giving us nans
+		 	    if(i==nd) c0<0 ? c0*=1.00001 : c0*=0.99999     # -||-
+                            print c0 >"$section.c0"
+                            if(coord == "x") {
+                              print c0, c1, c2
+                            }
+                            if(coord == "y") {
+                              print c1, c0, c2
+                            }
+                            if(coord == "z") {
+                              print c1, c2, c0
+                            }
+			  }
+			  print "quit"
+			}' | dxserver $f >\$section.v
+
+paste \$section.c0 \$section.v >%section_$coord.$rootname
+
+done
+
+rm -f \$section.c0 \$section.v

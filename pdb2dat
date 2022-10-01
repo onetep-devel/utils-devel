@@ -1,0 +1,421 @@
+#!/bin/bash
+##########################################################################################
+# by Jacek Dziedzic, jack.erede(-at-)gmail.com
+##########################################################################################
+# Takes a pdb file as input and creates a onetep input file (.dat)
+# The directives for onetep are read from pdb2dat.header so that they can be changed
+# without having to modify this script. If pdb2dat.header is absent, the script looks for
+# it in the directory the script itself is located in.
+#
+# v1.00 2009.10.23 jd, first version
+# v1.01 2009.10.23 jd, includes charge
+# v1.10 2009.10.26 jd, ion and water stripping logic removed, because removing stuff changes charge
+# v1.20 2009.10.26 jd, species that are not present are commented out
+# v1.30 2010.02.10 jd, margin may be specified on the command line
+# v1.40 2010.03.11 jd, negative margin allows to set absolute box size
+# v1.45 2010.03.24 jd, default margin was broken
+# v1.50 2010.06.25 jd, recognizes HETATM, CONECT, does not attempt to guess charge
+# v1.55 2010.06.25 jd, s/aminoacid/residue/g to use correct terminology, accept '*' and 'XXX'
+# v1.60 2010.06.25 jd, second letters in species names are converted to lowercase
+# v2.00 2010.08.20 jd, syntax change, -a, -w added
+# v2.01 2010.09.01 jd, fixed missing '"' in unit conversion
+# v2.10 2010.09.01 jd, translation tied to the margin option
+# v2.20 2011.07.13 jd, -f added
+# v2.25 2011.07.13 jd, margins of zero allowed
+# v2.30 2013.07.28 jd, -s added
+# v2.31 2013.07.28 jd, trivial fixes to 'unrecognized record' message
+##########################################################################################
+
+ver="2.31"
+hdr="pdb2dat.header"
+standard_residues="ALA ARG ASN ASP CYS GLU GLN GLY HIS ILE LEU LYS MET PHE PRO SER THR TRP TYR VAL \
+                   ASX GLX XLE HIE CYX HIS HID HIP"
+ang2bohr=1.889726313
+
+##########################################################################################
+
+syntax_help() {
+  echo "The correct syntax is: " >&2
+  echo "pdb2dat -x box_x -y box_y -z box_z [-m] [-a] [-w] [-f x_column] [-s column] pdbinputfile" >&2
+  echo "... where pdbinputfile is the name of the .pdb file that you want a .dat version of," >&2
+  echo "    -x, -y and -z can be used to specify the box size for the .dat file," >&2
+  echo "    -m will cause the above values to be interpreted as a margin to be added" >&2
+  echo "       on all sides, rather than an absolute box size, atoms will be translated,">&2
+  echo "    -a will cause the above values to be interpreted as given in Angstroem, not bohr," >&2
+  echo "    -w will wrap all atoms back to the box," >&2
+  echo "    -f n will look for atom positions at columns n..n+2 (default is 6). This is useful" >&2
+  echo "       for weird PDBs that have an extra column shifting the positions to columns 7..9." >&2
+  echo "    -s n will look for atom species at column n (instead of the default of 3). This is" >&2
+  echo "       useful for PDBs generated with Materials Studio, which for some reason get the" >&2
+  echo "       third coulmn wrong. The correct n in this case is 11." >&2
+  echo >&2
+  echo "    A file called pdb2dat.header will be used as a template to create the output," >&2
+  echo "    this file will be looked for in the current directory, and failing that, in" >&2
+  echo "    the directory where the script resides." >&2
+  echo >&2
+  echo "Example: (what Stephen does)" >&2
+  echo "    pdb2dat -x 9 -y 9 -z 9 -m -a input.pdb" >&2
+  echo "    Add a margin of 9 A, translate atoms to accomodate this and" >&2
+  echo "    have the box size determined automatically." >&2
+  echo >&2
+  echo "Example: (what Krispy does)" >&2
+  echo "    pdb2dat -x 50 -y 60 -z 70 -a -w input.pdb" >&2
+  echo "    Have a box of 50x60x70 A, wrap atoms into the box." >&2
+  echo >&2
+}
+
+abort() {
+  echo >&2
+  echo "Aborting!" >&2
+  echo >&2
+  exit $errcode
+}
+
+
+echo
+echo "*** pdb2dat v$ver. Creates a onetep input file (.dat) from a pdb file."
+echo "                   2009.10-2013.07 Jacek Dziedzic, jack.erede(-at-)gmail.com"
+echo
+
+# Default options
+first_column=6
+species_column=3
+margin=0
+angstroem=0
+wrap=0
+mx=0
+my=0
+mz=0
+
+# Parse options, if any
+if [ $# -eq 0 ]; then
+    echo "Improper invocation." >&2
+    syntax_help
+    errcode=1; abort
+fi
+while getopts "x: y: z: f: s: mawc" flag; do
+  if [ "$flag" == "?" ]; then
+    echo "Improper invocation." >&2
+    syntax_help
+    errcode=1; abort
+  fi
+  if [ "$flag" == "x" ]; then mx=$OPTARG; fi
+  if [ "$flag" == "y" ]; then my=$OPTARG; fi
+  if [ "$flag" == "z" ]; then mz=$OPTARG; fi
+  if [ "$flag" == "f" ]; then first_column=$OPTARG; fi
+  if [ "$flag" == "s" ]; then species_column=$OPTARG; fi
+  if [ "$flag" == "m" ]; then margin=1; fi
+  if [ "$flag" == "a" ]; then angstroem=1; fi
+  if [ "$flag" == "w" ]; then wrap=1; fi
+done
+
+# Margin is pointless without translating
+translate=$margin
+
+# Where and when am I?
+myroot=`dirname $0`
+date=`date`
+
+if [ $margin == 0 ]; then
+  something="box"
+else
+  something="margin"
+fi
+
+if [ $wrap == 0 ]; then
+  iswrap=" not"
+else
+  iswrap=""
+fi
+
+# Unit conversion
+if [ $angstroem == 1 ]; then
+  mxbohr=`echo $mx $ang2bohr | awk '{printf("%.10g",$1*$2)}'`
+  mybohr=`echo $my $ang2bohr | awk '{printf("%.10g",$1*$2)}'`
+  mzbohr=`echo $mz $ang2bohr | awk '{printf("%.10g",$1*$2)}'`
+  mxA=$mx
+  myA=$my
+  mzA=$mz
+else
+  mxA=`echo $mx $ang2bohr | awk '{printf("%.10g", $1/$2)}'`
+  myA=`echo $my $ang2bohr | awk '{printf("%.10g", $1/$2)}'`
+  mzA=`echo $mz $ang2bohr | awk '{printf("%.10g", $1/$2)}'`
+  mxbohr=$mx
+  mybohr=$my
+  mzbohr=$mz
+fi
+
+echo "Using a $something of ($mxbohr, $mybohr, $mzbohr) [bohr] which is ($mxA, $myA, $mzA) [A]"
+echo "Atoms will$iswrap be wrapped back to the box."
+if [ $translate == 1 ]; then
+  echo "Atoms will be translated to accommodate for margin."
+fi
+
+# Sanity check
+mxA=`echo $mxA | awk '{print $1+0}'`
+myA=`echo $myA | awk '{print $1+0}'`
+mzA=`echo $mzA | awk '{print $1+0}'`
+
+# Check for non-numerical values, yet allow zeros (a margin of zero is sensible)
+if [ "$mxA" == "0" ] && [ mxA != "0" ] && [ mxA != "0.0" ]; then
+  echo "-x not specified or argument is something non-numerical." >&2
+  errcode=2; abort
+fi
+if [ "$myA" == "0" ] && [ myA != "0" ] && [ myA != "0.0" ]; then
+  echo "-y not specified or argument is something non-numerical." >&2
+  errcode=2; abort
+fi
+if [ "$mzA" == "0" ] && [ mzA != "0" ] && [ mzA != "0.0" ]; then
+  echo "-z not specified or argument is something non-numerical." >&2
+  errcode=2; abort
+fi
+
+if [ $species_column != 3 ]; then
+  echo "Using a non-standard column ($species_column) to determine the atomic species."
+fi
+
+# Check if the file is readable
+f=${!#} # Magic incantation for "last parameter"
+
+if [ ! -r "$f" ]; then
+  echo "$f not readable." >&2
+  errcode=3; abort
+fi
+
+# Find out a suitable name for the onetep .dat file that we're going to build
+fout=`echo $f | sed "s/\.pdb//"`
+fout=$fout".dat"
+
+# Name of the temporary files (for coordinate translation)
+ftmp1="$fout"".tmp1"
+ftmp2="$fout"".tmp2"
+ftmp3="$fout"".tmp3"
+rm -f $ftmp1
+rm -f $ftmp2
+rm -f $ftmp3
+
+let "box_not_margin=1-margin"
+
+# Parse the PDB file, converting atom names
+# Determine the bounding box, save to a temporary file
+cat $f | awk -v standard_residues="$standard_residues" -v ftmp2=$ftmp2 -v ftmp3=$ftmp3 -v marginx=$mxA -v marginy=$myA -v marginz=$mzA \
+             -v box_not_margin=$box_not_margin -v want_translation=$translate -v first_column=$first_column -v species_column=$species_column '
+            
+              function min3(a,b,c) {
+                return ( (a<b) ? ((a<c) ? a : c) : ((b<c) ? b : c) )
+	      }
+
+              BEGIN {
+                split(standard_residues,standard_residues_arr," ");
+		xmin=ymin=zmin=99999.0;
+		xmax=ymax=zmax=-99999.0;
+	      }
+              /AT/ { # match ATOM and HETATM
+	               atname=$species_column;
+		       fullatname=$species_column;
+		       residue=$4;
+
+                       #############################
+                       #### DETERMINE ATOM NAME ####
+                       #############################
+		       gsub(/[0123456789]/,"",atname); # strip numbers to get rid of 3HD1 and things like that
+		       atname_root=substr(atname,1,2);
+                       # --- single atoms ---
+                       # If they do not have an associated residue, like "ZN ZN", leave them alone
+		       # ... they are probably Zn or Cl or stuff like that
+		       # Do the same for atoms where residue is "*" or "XXX"
+                       if(atname == residue || residue == "*" || residue == "XXX") {
+                         atname_out=atname_root;
+		       }
+                       # --- atoms in residues ---
+		       else {
+                         # single-letter species?
+			 if(length(atname_root)==1) {
+			   atname_out=atname_root;
+			 }
+			 else {
+			 # something longer? Check if the residue is standard, then its safe to strip to one letter
+                           found=0;
+                           for(test_residue_index in standard_residues_arr) {
+                             test_residue = standard_residues_arr[test_residue_index];
+			     if(test_residue == residue) found=1;
+			   }
+    			   atname_out=substr(atname_root,1,1);
+			   if( ! found) {
+                             # print("WARNING: Non-obvious species " atname_root " in a non-standard residue: " residue ". Assuming this is " atname_out) > "/dev/stderr"
+			   }
+			 }
+		       }
+
+                       ###########################
+                       # Update the bounding box #
+		       ###########################
+		       x=$(first_column); y=$(first_column+1); z=$(first_column+2);
+		       if(x<xmin) xmin=x; if(y<ymin) ymin=y; if(z<zmin) zmin=z;
+		       if(x>xmax) xmax=x; if(y>ymax) ymax=y; if(z>zmax) zmax=z;
+		       
+		       ################################
+		       # Store atom name and position #
+		       ################################
+		       printf("%1s %8.3f %8.3f %8.3f\n",atname_out,x,y,z);
+		       species_array[atname_out]=atname_out;
+                     }
+		     
+		     {
+                       recordtype=$1;
+		       if(recordtype != "ATOM" && recordtype != "HETATM" && recordtype != "CONECT" && recordtype != "REMARK" && recordtype != "TER" && recordtype != "END") {
+                         printf("Unrecognized record type: ---%s---%s",recordtype, ". Ignoring.\n") > "/dev/stderr"
+		       }
+		     }
+		     
+		     END {
+                     ###########################################################################
+		     # Adjust the bounding box for margin, or override with requested box size #
+                     ###########################################################################
+                       printf("\n") > "/dev/stderr"
+                       printf("Bounding box (original):             %8.3f %8.3f %8.3f - %8.3f %8.3f %8.3f [A]\n", xmin, ymin, zmin, xmax, ymax, zmax) > "/dev/stderr"
+		       if(box_not_margin) {
+			 printf("Overriding this with your explicit box size request.\n") > "/dev/stderr"
+		         xmin=0.0; ymin=0.0; zmin=0.0;
+		         xmax=marginx; ymax=marginy; zmax=marginz;
+		       }
+		       else {
+			 printf("Applying the desired margin.\n") > "/dev/stderr"
+                         xmin-=marginx; ymin-=marginy; zmin-=marginz;
+		         xmax+=marginz; ymax+=marginz; zmax+=marginz;
+		       }
+                       printf("Bounding box (now):                  %8.3f %8.3f %8.3f - %8.3f %8.3f %8.3f [A]\n", xmin, ymin, zmin, xmax, ymax, zmax) > "/dev/stderr"
+                       shiftx=-xmin; shifty=-ymin; shiftz=-zmin;
+                       if(want_translation) {
+                         printf("Translation vector:                  %8.3f %8.3f %8.3f [A]\n", shiftx, shifty, shiftz) > "/dev/stderr"
+                         xmin+=shiftx; ymin+=shifty; zmin+=shiftz;
+  		         xmax+=shiftx; ymax+=shifty; zmax+=shiftz;		       
+                         printf("Bounding box (w/margin, translated): %8.3f %8.3f %8.3f - %8.3f %8.3f %8.3f [A]\n", xmin, ymin, zmin, xmax, ymax, zmax) > "/dev/stderr"
+                       }
+                       printf("%8.3f %8.3f %8.3f %8.3f %8.3f %8.3f %8.3f %8.3f %8.3f\n", shiftx, shifty, shiftz, xmin, ymin, zmin, xmax, ymax, zmax) > ftmp2
+
+                     ##########################################
+		     # Dump the species list                  #
+                     ##########################################
+		       for(i in species_array) {
+                         print species_array[i] >> ftmp3
+		       }
+		     }
+              ' >>$ftmp1
+
+sed --in-place -r "s/([A-Z])(.)/\1\L\2/g" $ftmp1 # this magic incantation makes all second letters lowercase, so that CL -> Cl etc.
+
+
+# Determine the charge of the system in the PDB file
+echo "Assuming system charge to be zero... Fix this manually if it's not the case"
+intcharge="0"
+
+# Locate the header file and copy it to the .dat file
+hdrdefault="$myroot/$hdr"
+
+if [ ! -r "$hdr" ]; then
+  echo -n "'$hdr' not found, trying the default: '$hdrdefault'... " >&2
+  if [ ! -r "$hdrdefault" ]; then
+    echo -n "Not found either." >&2
+    errcode=5; abort
+  else
+    echo "OK, using the default header." >&2
+    hdr=$hdrdefault
+  fi
+fi
+
+echo "Creating $fout..."
+echo "! Created by pdb2dat v$ver from $f on $date" >$fout
+echo "! 2009.10. Jacek Dziedzic jack.erede@gmail.com" >>$fout
+presentspecies=`cat $ftmp3 | sed -r "s/([A-Z])(.)/\1\L\2/g"` # the magic incantation makes all second letters lowercase, so that CL -> Cl etc.
+
+# Go through the .dat file header, copying everything verbatim, except for the charge
+# and the species block, from which remove all the species that were absent in the pdb file
+# (All the species that were present in the pdb are now stored in ftmp3 and passed in
+#  presentspecies, after a case fix (CL->Cl and so on))
+cat $hdr | sed "s/#CHARGE#/$intcharge/" | awk -v presentspecies="$presentspecies" \
+  ' BEGIN{
+           split(presentspecies,presentspecies_arr," ");
+         }
+         {
+           if($0 ~ "%block species") inblock=1;
+	   if($0 ~ "%endblock species") inblock=0;
+           withinblock=inblock && ($0 !~ "block"); # exclude the boundaries themselves
+	   if(! withinblock ) {
+	     print $0; # dont mess with stuff outside of %block species/%endblock species
+	     next;
+	   }
+           present=0;
+	   for(i in presentspecies_arr) {
+             testspecies=presentspecies_arr[i];
+	     if(tolower(testspecies) == tolower($1)) present=1; # Case-insensitive compare
+	   }
+	   if(present != 0) print $0;
+         }' >>$fout
+
+# Paste the new bounding box into the onetep .dat file
+echo "Pasting the new bounding box into the onetep .dat file"
+echo >>$fout
+echo " %block lattice_cart" >>$fout
+cat $ftmp2 | awk -v ang2bohr=$ang2bohr '{printf(" %7.3f %7.3f %7.3f\n %7.3f %7.3f %7.3f\n %7.3f %7.3f %7.3f\n",$7*ang2bohr,0.0,0.0,0.0,$8*ang2bohr,0.0,0.0,0.0,$9*ang2bohr)}' >>$fout
+echo " %endblock lattice_cart" >>$fout
+
+# Translate the atoms, paste into the onetep .dat file
+echo "Pasting the new atomic positions into the onetep .dat file"
+echo >>$fout
+echo " %block positions_abs" >>$fout
+
+cat $ftmp1 | awk -v ang2bohr=$ang2bohr -v ftmp2=$ftmp2 -v wrap=$wrap 'BEGIN{
+                                                               getline shifts < ftmp2
+							       split(shifts,shifts_arr," ")
+							     }
+  						        {
+                                                          atname=$1
+                                                          newx=$2+shifts_arr[1]
+							  newy=$3+shifts_arr[2]
+							  newz=$4+shifts_arr[3]
+							  boxx=shifts_arr[7]*ang2bohr
+							  boxy=shifts_arr[8]*ang2bohr
+							  boxz=shifts_arr[9]*ang2bohr
+							  newx*=ang2bohr
+							  newy*=ang2bohr
+							  newz*=ang2bohr
+							  if(newx > boxx || newy >boxy || newz >boxz || newx<0.0 || newy<0.0 || newz<0.0) {
+                                                            if(wrap) {
+  							      printf("Wrapped %-3s %14.8f %14.8f %14.8f\n",atname,newx,newy,newz) >"/dev/stderr"
+                                                              if(newx<0) {
+                                                                newx+=boxx
+                                                              }
+                                                              if(newy<0) {
+                                                                newy+=boxy
+                                                              }
+                                                              if(newz<0) {
+                                                                newz+=boxz
+                                                              }
+                                                              if(newx>boxx) {
+                                                                newx-=boxx
+                                                              }
+                                                              if(newy>boxy) {
+                                                                newy-=boxy
+                                                              }
+                                                              if(newz>boxz) {
+                                                                newz-=boxz
+                                                              }
+  							      printf("... to  %-3s %14.8f %14.8f %14.8f\n",atname,newx,newy,newz) >"/dev/stderr"
+
+                                                            }
+                                                            else {
+                                                              print "WARNING! You''re thinking outside the box here :/." >"/dev/stderr"
+  							      printf("%-3s %14.8f %14.8f %14.8f\n","BOX",boxx,boxy,boxz) >"/dev/stderr"
+  							      printf("%-3s %14.8f %14.8f %14.8f\n",atname,newx,newy,newz) >"/dev/stderr"
+  							    }
+							  }
+							  printf("%-3s %14.8f %14.8f %14.8f\n",atname,newx,newy,newz);
+							} ' >>$fout
+echo " %endblock positions_abs" >>$fout
+rm -f $ftmp1
+rm -f $ftmp2
+rm -f $ftmp3
+
+echo 
+echo "Done!"

@@ -1,0 +1,74 @@
+#!/bin/bash
+##########################################################################################
+# dxstats -- provide statistical information for data contained in a .dx file
+#
+# v1.00 2010.05.17 jd, first version
+# v1.10 2010.06.08 jd, fixed initial values for min, max
+# v1.15 2011.07.18 jd, detects malformed .dx files
+# v1.20 2012.09.26 jd, works fine with slightly malformed .dx files produced by raw2dx.
+# v1.25 2020.03.16 jd, calculates RMS too
+##########################################################################################
+##########################################################################################
+ver="1.25"
+##########################################################################################
+
+improper_invocation() {
+  echo "Improper invocation. Supply one argument (name of the dx file). ">&2
+  exit 101
+}
+
+echo >&2
+echo "*** dxstats $ver. Provides statistical information for data in a .dx file" >&2
+echo "                  2010.05 Jacek Dziedzic, jack.erede@gmail.com" >&2
+echo >&2
+
+if [ $# -ne 1 ]; then
+  improper_invocation
+fi 
+
+f="$1"
+
+echo "Reading from $f." >&2
+
+datastart=`head -n 100 $f | grep -n "follows" | tr ":" " " | awk '{print $1+1}'`
+
+if [ -z "$datastart" ]; then
+  echo "Malformed .dx file: $f (missing 'data follows' bit in header)" >&2
+  exit 1
+fi
+
+cat $f | awk -v datastart=$datastart '
+  function abs(x) {
+    return x > 0.0 ? x : -x
+  }
+  BEGIN{
+    min=9E99
+    max=-9E99
+  }
+  {
+    if(NR >= datastart) {
+      if($1 == "attribute") exit
+      if($0 ~ "#") exit
+      for(i=1;i<=NF;++i) {
+        # Now we are inside the actual data
+        sum=sum+$i
+        sumsq=sumsq+$i*$i
+        abssum=abssum+abs($i)
+        if($i < min) min=$i
+        if($i > max) max=$i
+        nelem++
+      }
+    }
+  }
+  END {
+    printf("nelem:  %20i\n",nelem)
+    printf("min:    %20.10e\n",min)
+    printf("max:    %20.10e\n",max)
+    printf("sum:    %20.10e\n",sum)
+    printf("avg:    %20.10e\n",nelem != 0 ? sum/nelem : 0.0)
+    printf("abssum: %20.10e\n",abssum)
+    printf("avgabs: %20.10e\n",nelem != 0 ? abssum/nelem : 0.0)
+    printf("sumsq:  %20.10e\n",sumsq)
+    printf("rms:    %20.10e\n",nelem != 0 ? sqrt(sumsq/nelem) : 0.0)
+  }
+'
