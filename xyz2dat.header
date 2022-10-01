@@ -1,0 +1,42 @@
+
+ ! Adjust this manually if your system is not neutral
+ charge #CHARGE# 
+ 
+ cutoff_energy :  800 eV
+ ngwf_threshold_orig : 0.000002
+ kernel_cutoff : 1000
+ xc_functional PBE
+ dispersion 1
+ 
+ minit_lnv 5 
+ maxit_lnv 5 
+ maxit_ngwf_cg 40
+ 
+ output_detail VERBOSE
+ do_properties T
+ cube_format T
+ write_denskern T
+ write_tightbox_ngwfs T
+ write_density_plot T
+ lumo_dens_plot 0
+ homo_dens_plot 0
+ 
+ %block species
+ N   N   7 4 8.0
+ H   H   1 1 8.0
+ C   C   6 4 8.0
+ S   S  16 4 8.0
+ O   O   8 4 8.0
+ Cl  Cl 17 9 8.0
+ F   F   9 9 8.0
+ %endblock species
+ 
+ %block species_pot
+ N   N_00.recpot
+ H   H_04.recpot
+ C   C_01.recpot
+ S   S_00.recpot
+ O   O_02.recpot
+ Cl Cl_00.recpot
+ F   F_00.recpot
+ %endblock species_pot

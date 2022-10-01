@@ -1,0 +1,62 @@
+#!/bin/bash
+
+# v1.00
+# Shifts the coordinates of all atoms in a .dat file, leaving the box unchanged.
+# 2010.10.25 Jacek Dziedzic, jack.erede@gmail.com
+
+#################################################################################
+improper_invocation() {
+  echo "Improper invocation. Supply four arguments -- the name of the input .dat file, followed by three offsets (in bohr)." >&2
+  exit 1
+}
+
+echo "datshift: Shifts the coordinates of all atoms in a onetep .dat file, leaving the box unchanged." >&2
+echo "          It's up to you to make sure the shifted atoms are still inside the box (use dat2bounds)." >&2
+echo "          v1.00 2010.10.25, Jacek Dziedzic, jack.erede@gmail.com" >&2
+echo >&2
+
+if [ $# -ne 4 ]; then
+  improper_invocation
+fi
+
+f="$1"
+xx=$2
+yy=$3
+zz=$4
+
+echo "Shifting $f by ($xx, $yy, $zz) bohr" >&2
+
+if [ ! -r $f ]; then
+  echo "$f absent or unreadable. Aborting!" >&2
+  exit 2
+fi
+
+# Find the coordinate block
+n0=`cat $f | grep -n "%block pos" | tr ":" " " | awk '{print $1}'`
+n1=`cat $f | grep -n "%endblock pos" | tr ":" " " | awk '{print $1}'`
+
+if [ -z "$n0" ]; then
+  echo "Failed to locate '%block pos' in $f. Looks like it's not a valid .dat file. Aborting!" >&2
+  exit 3
+fi
+
+if [ -z "$n1" ]; then
+  echo "Failed to locate '%endblock pos' in $f. Looks like it's not a valid .dat file. Aborting!" >&2
+  exit 3
+fi
+
+let "nlines=n1-n0"
+
+# Copy everything before it verbatim
+head -n $n0 $f
+
+# Copy the contents of the block, shifting coordinates
+tail -n +$n0 $f | tail -n +2 | head -n $nlines | head -n -1 \
+  | awk -v xx=$xx -v yy=$yy -v zz=$zz \
+  '{
+     x=$2+xx; y=$3+yy; z=$4+zz;
+     printf("%s %16.8f %16.8f %16.8f\n",$1,x,y,z)
+   }'
+
+# Copy everything after it verbatim
+tail -n +$n1 $f

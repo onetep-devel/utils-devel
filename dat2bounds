@@ -1,0 +1,145 @@
+#!/bin/bash
+
+#########################################################################
+# Takes a onetep input file (.dat) as an argument and calculates the    #
+# width of the system in all cartesian directions                       #
+#########################################################################
+# v1.20 2010.01.28 first version, Jacek Dziedzic                        #
+# v1.40 2011.06.30: calculates minimum box size for MT and CC           #
+# v1.41 2011.06.30: minor bugfix                                        #
+# v1.50 2017.10.27: calculates the centre too.                          #
+#########################################################################
+
+echo "dat2bounds: Some useful info on the geometry of a .dat file." >&2
+echo "            v1.50 2010.01.28-2017.10.27, Jacek Dziedzic, jaca@kdm.task.gda.pl" >&2
+echo >&2
+
+if [ $# -gt 1 ]; then
+  echo "Improper invocation. Supply an input .dat file (or nothing, if there's just one)." >&2
+  exit 101
+fi
+
+# Determine the input file
+if [ $# -eq 0 ]; then
+  ndatfiles=`ls *.dat | wc -l`
+  if [ $ndatfiles -gt 1 ]; then
+    echo "Yeah, but which .dat file?" >&2
+    exit 102
+  fi
+  if [ $ndatfiles -eq 0 ]; then
+    echo "No .dat files here." >&2
+    exit 103
+  fi
+  datfile=`echo *.dat`
+else
+  datfile="$1"
+fi
+
+if [ ! -r "$datfile" ]; then
+  echo "$datfile unreadable. Aborting!" >&2
+  exit 104
+fi
+
+# Determine box lengths
+boxlengths=`
+cat $datfile | awk '
+  BEGIN{
+    boxbegin=1E10
+  }
+  {
+    if($0 ~ "%block lattice_cart") boxbegin=NR
+    if(NR == boxbegin + 1) {
+      x=$1
+      if($2 != 0.0 || $3 != 0.0) error=1;
+    }
+    if(NR == boxbegin + 2) {
+      y=$2
+      if($1 != 0.0 || $3 != 0.0) error=1;
+    }
+    if(NR == boxbegin + 3) {
+      z=$3
+      if($1 != 0.0 || $2 != 0.0) error=1;
+    }
+  }
+  END{
+    if(error) print "";
+    else print x," ",y," "z;
+  }
+'
+`
+
+if [ -z "$boxlengths" ]; then
+  echo "Could not determine the box lengths. Non-cuboid boxes and units inside blocks are not supported, BTW. Aborting!" >&2
+  exit 105
+fi
+
+boxx=`echo $boxlengths | awk '{print $1}'`
+boxy=`echo $boxlengths | awk '{print $2}'`
+boxz=`echo $boxlengths | awk '{print $3}'`
+
+# Calculate and display bounds
+cat $datfile -v | awk -v boxx=$boxx -v boxy=$boxy -v boxz=$boxz '
+  BEGIN {
+    startline=1E10
+    xmax=ymax=zmax=-1E10
+    xmin=ymin=zmin=1E10
+    r=7.0 # NGWF radius
+  }
+  $0 ~ "%block positions_abs" {startline=NR}
+  $0 ~ "%endblock positions_abs" {must_stop=1}
+  NR>startline && ! must_stop {
+    x=$2; y=$3; z=$4;
+    if(x<xmin) xmin=x;
+    if(y<ymin) ymin=y;
+    if(z<zmin) zmin=z;
+    if(x>xmax) xmax=x;
+    if(y>ymax) ymax=y;
+    if(z>zmax) zmax=z;
+  }
+  END {
+    extent_x=xmax+r-(xmin-r)
+    extent_y=ymax+r-(ymin-r)
+    extent_z=zmax+r-(zmin-r)
+    r_denmax=sqrt(extent_x*extent_x+extent_y*extent_y+extent_z*extent_z)
+    r_c=r_denmax+5.0
+    printf("\nBox dimensions:      %14.8f %14.8f %14.8f - %14.8f %14.8f %14.8f\n",0,0,0,boxx,boxy,boxz)
+    printf("\nATOMIC CORES:\n");
+    printf("Bounded by:          %14.8f %14.8f %14.8f - %14.8f %14.8f %14.8f\n",xmin,ymin,zmin,xmax,ymax,zmax)
+    printf("Extent:              %14.8f %14.8f %14.8f\n",xmax-xmin,ymax-ymin,zmax-zmin)
+    printf("Centered at:         %14.8f %14.8f %14.8f\n",(xmin+xmax)*0.5,(ymin+ymax)*0.5,(zmin+zmax)*0.5)
+    printf("Margin to box sides: %14.8f %14.8f %14.8f - %14.8f %14.8f %14.8f\n",xmin,ymin,zmin,(boxx-xmax),(boxy-ymax),(boxz-zmax))
+    printf("\nLOCALIZED NGWFS (assuming NGWF radius of %f):\n",r);
+    printf("Bounded by:          %14.8f %14.8f %14.8f - %14.8f %14.8f %14.8f\n",xmin-r,ymin-r,zmin-r,xmax+r,ymax+r,zmax+r)
+    printf("Extent:              %14.8f %14.8f %14.8f\n",extent_x,extent_y,extent_z)
+    printf("Margin to box sides: %14.8f %14.8f %14.8f - %14.8f %14.8f %14.8f\n",xmin-r,ymin-r,zmin-r,(boxx-xmax)-r,(boxy-ymax)-r,(boxz-zmax)-r)
+    printf("\n")
+    printf("Minimum box size for Martyna-Tuckerman:\n")
+    printf("                     %14.8f %14.8f %14.8f\n",2*extent_x,2*extent_y,2*extent_z)
+    printf("\n")
+    printf("Safe radius for cutoff-Coulomb (SPHERE), assuming 5a0 for ringing to die out:\n")
+    printf("                     %14.8f\n\n",r_c)
+    printf("Corresponding padded_cell:\n")
+    printf("                     %14.8f %14.8f %14.8f\n",r_denmax+r_c+5.0,r_denmax+r_c+5.0,r_denmax+r_c+5.0)
+  }
+'
+
+#
+# Nick's prescription for CC parameters:
+#
+# As for the padded lattice size, it depends what you want to do with the
+# results. If you just care about the energy, then the prescription for
+# the cutoff radius is
+# 
+# R_c ~ R_denmax + ~5
+# 
+# where R_denmax is the separation of any two nonzero points of density.
+# Then this needs to be put in a padded cell of size:
+# 
+# L_pad > R_denmax + R_c + ~5
+# 
+# The extra 5-10 bohrs are sensible so as to be sure that the ringing from
+# the cutoff does not impinge upon the density. 
+# 
+# R_denmax can be approximated by the separation of the furthest-apart two
+# atoms in the simulation plus twice the NGWF radius. Or, if it's a
+# cubic-ish shape, the linear extent times sqrt(3) will do too.

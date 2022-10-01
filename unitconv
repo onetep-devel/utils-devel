@@ -1,0 +1,205 @@
+#!/bin/bash
+
+##########################################################################################
+# unitconv -- converts units of numerical data
+#
+# v1.00 2009.11.23 jd, first version
+# v1.10 ?
+# v1.15 2009.12.03 jd, fixed filename input
+# v1.20 2010.03.05 jd, extra precision in bohr-angstrom
+# v1.30 2010.05.14 jd, support for immediate values (precede with ':')
+# v1.32 2010.05.14 jd, doc update, spelling of mol(e), over/per, added distance_nm
+# v1.40 2010.11.05 jd, forces added
+# v1.45 2011.11.15 jd, kcal/mol made more precise, courtesy of Stephen
+# v1.50 2014.07.15 jd, dipole moments, Coulomb, case variations
+# v1.55 2014.07.16 jd, concentration
+# v1.60 2014.08.14 jd, quadrupole moments
+##########################################################################################
+##########################################################################################
+ver="1.60"
+##########################################################################################
+# The table below lists all recognized units and conversion factors to SI units 
+# which are the internal units of this script
+
+unittable=\
+"
+energy_apbs 4.11626E-21
+energy_au 4.3597482e-18
+energy_ev 1.60217646E-19
+energy_eV 1.60217646E-19
+
+energy_kcal_over_mol  6.94770014E-21
+energy_kcal_over_mole 6.94770014E-21
+energy_kcal_per_mol   6.94770014E-21
+energy_kcal_per_mole  6.94770014E-21
+
+energy_kj_over_mol  1.66054E-21
+energy_kj_over_mole 1.66054E-21
+energy_kj_per_mol   1.66054E-21
+energy_kj_per_mole  1.66054E-21
+energy_kJ_over_mol  1.66054E-21
+energy_kJ_over_mole 1.66054E-21
+energy_kJ_per_mol   1.66054E-21
+energy_kJ_per_mole  1.66054E-21
+energy_ry 2.179845896E-18
+energy_Ry 2.179845896E-18
+energy_J 1.0
+energy_si 1.0
+
+force_au 8.23872947720018099E-8
+force_ev_over_A 0.160217646E-8
+force_eV_over_A 0.160217646E-8
+force_ev_per_A 0.160217646E-8
+force_eV_per_A 0.160217646E-8
+force_nN 1E-9
+force_N 1.0
+force_si 1.0
+
+charge_apbs 1.60217646E-19
+charge_au 1.60217646E-19
+charge_C 1.0
+charge_si 1.0
+
+charge_density_apbs 1.602176450E+11
+charge_density_au 1.08120356E+12
+charge_density_si 1.0
+
+dipole_debye 3.33564E-30
+dipole_D 3.33564E-30
+dipole_au 8.4783535e-30
+dipole_Cm 1.0
+dipole_si 1.0
+
+quadrupole_debye_angstrom 3.33564E-40
+quadrupole_DA 3.33564E-40
+quadrupole_au 4.486551E-40
+quadrupole_Cm2 1.0
+quadrupole_si 1.0
+
+concentration_au 11205885.473
+concentration_1_over_bohr3 11205885.473
+concentration_mole_per_dm3 1000.0
+concentration_mole_over_dm3 1000.0
+concentration_mol_per_dm3 1000.0
+concentration_mol_over_dm3 1000.0
+concentration_mole_over_m3 1.0
+concentration_mole_per_m3 1.0
+concentration_mol_over_m3 1.0
+concentration_mol_per_m3 1.0
+concentration_mole_si 1.0
+
+potential_apbs 0.02569167
+potential_au 27.21141091
+potential_si 1.0
+
+distance_A 1E-10
+distance_au 0.529177249E-10
+distance_nm 1E-09
+distance_m 1.0
+distance_si 1.0
+"
+#
+# When adding new units, also update the help string below
+#
+##########################################################################################
+
+improper_invocation() {
+  echo "Improper invocation. Either..." >&2
+  echo "- Supply two arguments   -- the input and output units." >&2
+  echo "                            This will then output a single number -- the conversion factor between the units." >&2
+  echo "- Supply three arguments -- the input units, output units and the name of the input file or datastream." >&2
+  echo "                            This will then output the converted data to stdout." >&2
+  echo "- Supply three arguments -- the input units, output units and the value to convert, preceded by :." >&2
+  echo "                            This will then output a single number -- the value in output units." >&2
+  echo 
+  echo "Recognized units:"
+  echo 
+  echo "energy_apbs           (EkT, for T=298.15)"
+  echo "energy_au             (Eh, atomic units)"
+  echo "energy_ev             (eV, electron-volt)"
+  echo "energy_kcal_over_mole (kcal/mol) --> Can also use 'per' instead of 'over'"
+  echo "energy_kj_over_mole   (kJ/mol)   --> ... and 'mol' instead of 'mole'"
+  echo "energy_ry             (rydberg)"
+  echo "energy_si             (joule)"
+  echo
+  echo "force_au              (Eh/a0)"
+  echo "force_ev_over_A       (eV/A)"
+  echo "force_nN              (nanonewton)"
+  echo "force_si              (newton)"
+  echo
+  echo "charge_apbs           (e, |electron charge|)"
+  echo "charge_au             (e, |electron charge|)"
+  echo "charge_si             (coulomb)"
+  echo
+  echo "charge_density_apbs   (e/A^3)"
+  echo "charge_density_au     (e/bohr^3)"
+  echo "charge_density_si     (C/m^3)"
+  echo
+  echo "concentration_au      (1/bohr^3) (=concentration_1_over_bohr3)"
+  echo "concentration_mole_per_dm3 (mol/dm^3) -> can also use mol, over"
+  echo "concentration_si      (mol/m^3)"
+  echo
+  echo "dipole_debye          (Debye) (=dipole_D)"
+  echo "dipole_au             (e*a0)"
+  echo "dipole_si             (C*m) (=dipole_Cm)"
+  echo
+  echo "quadrupole_debye_angstrom  (Debye*A) (=quadrupole_DA)"
+  echo "quadrupole_au         (e*a0^2)"
+  echo "quadrupole_si         (C*m^2) (=quadrupole_Cm2)"
+  echo
+  echo "potential_apbs        (EkT/e)"
+  echo "potential_au          (Eh/e)"
+  echo "potential_si          (V = J/C)"
+  echo
+  echo "distance_A            (A=1E-10m, angstroem)"
+  echo "distance_au           (a0, bohr)"
+  echo "distance_nm           (nm=1E-09m)"
+  echo "distance_si           (m)"
+  echo
+  exit 101
+}
+
+echo >&2
+echo "*** unitconv v$ver. Converts units."           >&2
+echo "                    2009.11 Jacek Dziedzic, jack.erede@gmail.com"   >&2
+echo >&2
+
+if [ $# -ne 3 ] && [ $# -ne 2 ]; then
+  improper_invocation
+fi 
+
+if [ $# -eq 3 ]; then 
+  # check if $3 is an immediate value, not a filename
+  firstchar=`echo $3 | cut -c 1`
+  if [ $firstchar"x" == ":x" ]; then
+    immediate=`echo $3 | sed "s/://"`
+    echo "Converting immediate value $immediate from $1 to $2..." >&2
+    input="echo $immediate"
+  else
+    echo "Converting data in $3 from $1 to $2..." >&2
+    input="cat $3"
+  fi
+else
+  echo "The conversion factor from $1 to $2 is..." >&2
+  input="echo 1.0"
+fi 
+
+$input | awk -v uin=$1 -v uout=$2 -v unittable="$unittable" '
+  function valueof(unit) {
+    for(i in unitarray) if(unitarray[i]==unit) return unitarray[i+1];
+    printf("\n!!! Unrecognized unit: %s. Pretending it is 0.0 so that you`d notice\n",unit) > "/dev/stderr"
+    return 0.0;
+  }
+
+  BEGIN {
+    split(unittable,unitarray," ")
+    vin=valueof(uin)
+    vout=1.0/valueof(uout)
+    printf("	Multiplying by %.10g to convert %s to SI...\n",vin,uin) > "/dev/stderr"
+    printf("	Multiplying by %.10g to convert SI to %s...\n",vout,uout) > "/dev/stderr"
+  }
+  {
+    for(i=1;i<=NF;++i) printf("%.10g ",$i*vin*vout)
+    printf("\n");
+  }
+  '

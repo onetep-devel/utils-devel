@@ -1,0 +1,95 @@
+#!/bin/bash
+
+#########################################################################
+# Takes a onetep input file (.dat) as an argument and produces an .xyz  #
+# file from the positions block.                                        #
+# Jacek Dziedzic, University of Southampton, jd12g09@soton.ac.uk        #
+#########################################################################
+# v1.00 2017.03.07 first version, Jacek Dziedzic                        #
+#########################################################################
+
+bohr2ang=0.529177
+
+echo "dat2xyz: Creates an .xyz file from a ONETEP .dat file." >&2
+echo "         v1.00 2017.03.07, Jacek Dziedzic, jd12g09@soton.ac.uk" >&2
+echo >&2
+
+if [ $# -gt 1 ]; then
+  echo "Improper invocation. Supply an input .dat file (or nothing, if there's just one)." >&2
+  exit 101
+fi
+
+# Determine the input file
+if [ $# -eq 0 ]; then
+  ndatfiles=`ls *.dat | wc -l`
+  if [ $ndatfiles -gt 1 ]; then
+    echo "Yeah, but which .dat file?" >&2
+    exit 102
+  fi
+  if [ $ndatfiles -eq 0 ]; then
+    echo "No .dat files here." >&2
+    exit 103
+  fi
+  datfile=`echo *.dat`
+else
+  datfile="$1"
+fi
+
+if [ ! -r "$datfile" ]; then
+  echo "$datfile unreadable. Aborting!" >&2
+  exit 104
+fi
+
+xyzfile=`echo $datfile | sed -r "s/.dat$/.xyz/"`
+
+# Determine box lengths
+boxlengths=`
+cat $datfile | awk '
+  BEGIN{
+    boxbegin=1E10
+  }
+  {
+    if($0 ~ "%block lattice_cart") boxbegin=NR
+    if(NR == boxbegin + 1) {
+      x=$1
+      if($2 != 0.0 || $3 != 0.0) error=1;
+    }
+    if(NR == boxbegin + 2) {
+      y=$2
+      if($1 != 0.0 || $3 != 0.0) error=1;
+    }
+    if(NR == boxbegin + 3) {
+      z=$3
+      if($1 != 0.0 || $2 != 0.0) error=1;
+    }
+  }
+  END{
+    if(error) print "";
+    else print x," ",y," "z;
+  }
+'
+`
+
+if [ -z "$boxlengths" ]; then
+  echo "Could not determine the box lengths. Non-cuboid boxes and units inside blocks are not supported, BTW. Aborting!" >&2
+  exit 105
+fi
+
+boxx=`echo $boxlengths | awk '{print $1}'`
+boxy=`echo $boxlengths | awk '{print $2}'`
+boxz=`echo $boxlengths | awk '{print $3}'`
+
+block="positions_abs"
+begin=`cat $datfile | grep -nE "%block $block( |$)" | tr ":" " " | getcol 1`
+end=`cat $datfile | grep -nE "%endblock $block( |$)" | tr ":" " " | getcol 1`
+
+cat $datfile | awk -v begin=$begin -v end=$end -v fac=$bohr2ang -v boxx=$boxx -v boxy=$boxy -v boxz=$boxz -v datfile=$datfile '
+BEGIN {
+  print end-begin-1
+  printf("BBox: 0.0 %f 0.0 %f 0.0 %f | %s\n",boxx*fac,boxy*fac,boxz*fac,datfile);
+}
+{
+  if(NR > begin && NR < end) {
+    printf("%-4s %20.10f %20.10f %20.10f\n", $1, $2*fac, $3*fac, $4*fac);
+  }
+}' >$xyzfile

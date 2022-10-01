@@ -1,0 +1,42 @@
+#!/bin/bash
+
+echo "datcentre v1.20. Centres the system in a .dat file"
+echo "                 2011.02. Jacek Dziedzic, jack.erede@gmail.com"
+echo 
+
+# v1.10 -- works with new dat2bounds
+# v1.20 -- fixed, v1.10 did not shift at all
+
+if [ $# -ne 1 ]; then
+  echo "Improper invocation. Supply (only) the name of a .dat file to centre." >&2
+  exit 1
+fi
+
+fin="$1"
+
+fout=`echo $fin | sed "s/\.dat/_shifted.dat/"`
+
+if [ ! -r $fin ]; then
+  echo "$fin absent or unreadable. Aborting!" >&2
+  exit 2
+fi
+
+margin=`dat2bounds $fin | grep "Margin to box sides" | tail -n 1`
+
+m1x=`echo $margin | getcol 5`
+m1y=`echo $margin | getcol 6`
+m1z=`echo $margin | getcol 7`
+m2x=`echo $margin | getcol 9`
+m2y=`echo $margin | getcol 10`
+m2z=`echo $margin | getcol 11`
+
+dx=`echo $m1x $m2x | awk '{print ($1+$2)/2-$1}'`
+dy=`echo $m1y $m2y | awk '{print ($1+$2)/2-$1}'`
+dz=`echo $m1z $m2z | awk '{print ($1+$2)/2-$1}'`
+
+datshift $fin $dx $dy $dz >$fout
+
+echo 
+echo "*** --- Resultant $fout: --- ***"
+echo 
+dat2bounds $fout

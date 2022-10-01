@@ -1,0 +1,74 @@
+#!/bin/bash
+
+to_kcal=627.5095517
+to_eV=27.21141091
+
+if [ $# -eq 0 ]; then
+  f=*.out
+else
+  f=$1
+fi
+
+if [ `echo $f | wc -w` -ne 1 ]; then
+  echo "Which .out file though?" >&2
+  exit 1
+fi
+
+if [ ! -r $f ]; then
+  echo "$f does not exist or is unreadable. Aborting!" >&2
+  exit 2
+fi
+
+lines=`cat $f | grep -n " \.\.\.\.\.\.\. " | tail -n 3 | tr ":" " " | awk '{print $1}' | tr "\n" " "`
+line1=`echo $lines | awk '{print $1}'` 
+line2=`echo $lines | awk '{print $2}'` 
+line3=`echo $lines | awk '{print $3}'`
+
+#                        .......   ...........   ......... <- line1
+#                           84    -0.268314438   1.0000000 <- e_deepest
+#                           85    -0.267784383   1.0000000
+#                           86    -0.265195395   1.0000000
+#                           87    -0.259594127   1.0000000
+#                           88    -0.252745029   1.0000000
+#                           89    -0.246640695   1.0000000
+#                           90    -0.237765231   1.0000000
+#                           91    -0.235205089   1.0000000
+#                           92    -0.227183512   0.8000000
+#                           93    -0.219308089   0.9000000 <- e_shallowest
+#                        .......   --- gap ---   ......... <- line2
+#                           94    -0.038851782   0.0500000
+#                           95    -0.017118468   0.1500000
+#                           94    -0.038851782   0.0000000 
+#                           95    -0.017118468   0.0000000
+#                           96    -0.013570124   0.0000000
+#                           97    -0.003037923   0.0000000
+#                           98     0.000852916   0.0000000
+#                           99     0.010189632   0.0000000
+#                          100     0.014041188   0.0000000
+#                          101     0.023381765   0.0000000
+#                          102     0.027086917   0.0000000
+#                          103     0.029156590   0.0000000
+#                        .......   ...........   ......... <- line3
+#                          548     3.860397669   0.0000000
+
+gap=`cat $f | grep "HOMO-LUMO gap" | getcol 3`
+
+echo $gap | awk -v to_kcal=$to_kcal -v to_eV=$to_eV '{print "Gap width: ",$1,"Ha = ", $1*to_kcal, "kcal/mol = ",$1*to_eV,"eV."}'
+
+cat $f | awk -v line1=$line1 -v line2=$line2 -v line3=$line3 -v to_kcal=$to_kcal -v to_eV=$to_eV '
+{
+  if(NR==line1+1) e_deepest=$2;
+  if(NR==line2-1) e_shallowest=$2;
+  if(NR>line2 && NR<line3) {
+    sum+=$3;
+    ediff_min=($2-e_shallowest);
+    ediff_max=($2-e_deepest);
+    impact_min+=ediff_min*$3;
+    impact_max+=ediff_max*$3;
+  }
+}
+END {
+  print "Total occupancy error (# of electrons on the wrong side of gap): ",sum
+  print "Lower bound for impact on energy: ",impact_min,"Ha = ", impact_min*to_kcal, "kcal/mol = ",impact_min*to_eV,"eV."
+  print "Upper bound for impact on energy: ",impact_max,"Ha = ", impact_max*to_kcal, "kcal/mol = ",impact_max*to_eV,"eV."
+}'
