@@ -1,5 +1,6 @@
 # Utilities
 Utility scripts and other resources for the ONETEP linear-scaling DFT code.
+Download this straight into the `utils` directory of your ONETEP installation.
 
 ## Interpretation of ONETEP runs
 
@@ -104,7 +105,6 @@ Utility scripts and other resources for the ONETEP linear-scaling DFT code.
   This is useful for processing `.md` files combined from multiple runs, where global history has been used, 
   leading to short time intervals present at the end of one run, and then again at the beginning of a restared run.
 
-
 ## Manipulation of input (`.dat`) files
 
 - ### `dat2bounds`: Shows information about the geometry of a ONETEP `.dat` file.
@@ -201,6 +201,9 @@ Utility scripts and other resources for the ONETEP linear-scaling DFT code.
 
   *Note*: This script needs `dxserver` to be present in your `PATH`.
 
+## DFTB
+
+- ### `dftb`: Parameter files for the DFTB method.
 
 ## QM/MM
 

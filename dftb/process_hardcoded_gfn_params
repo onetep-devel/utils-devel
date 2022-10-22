@@ -1,0 +1,170 @@
+#!/bin/bash
+
+##########################################################
+# Extracts hardcoded parameters from xtb's approxrab.f90 #
+# and covalentradd3.f90 into a parameter file            #
+# understandable by ONETEP.                              #
+#--------------------------------------------------------#
+# 2021.06.20 Jacek Dziedzic, J.Dziedzic@soton.ac.uk.     #
+# v1.00 -- initial version.                              #
+# v1.10 -- reads covalent radii too.                     #
+##########################################################
+
+# Conversion factor: a0 to angstrom ("autoaa" in xTB)
+convfac="0.52917726"
+# Scaling factor in covalentradd3.f90
+scale="0.75000000"
+
+fin="approxrab.f90"
+fin2="covalentradd3.f90"
+fin3="atomicrad.f90"
+fin4="paulingen.f90"
+
+start_en=`cat "$fin" | grep -n "data en" | tr ":" " " | awk '{print $1}'`
+start_r0=`cat "$fin" | grep -n "data r0" | tr ":" " " | awk '{print $1}'`
+start_cnfak=`cat "$fin" | grep -n "data cnfak" | tr ":" " " | awk '{print $1}'`
+start_p=`cat "$fin" | grep -n "data p" | tr ":" " " | awk '{print $1}'`
+end_en=`tail -n +$start_en "$fin" | grep -n "wp&" | head -n 1 | tr ":" " " | awk '{print $1}'`
+end_r0=`tail -n +$start_r0 "$fin" | grep -n "wp&" | head -n 1 | tr ":" " " | awk '{print $1}'`
+end_cnfak=`tail -n +$start_cnfak "$fin" | grep -n "wp&" | head -n 1 | tr ":" " " | awk '{print $1}'`
+
+start_covrad=`cat "$fin2" | grep -n ":: covalentRad" | tr ":" " " | awk '{print $1}'`
+end_covrad=`tail -n +$start_covrad "$fin2" | grep -n "/" | head -n 1 | tr ":" " " | awk '{print $1}'`
+
+start_atomicrad=`cat "$fin3" | grep -n ":: atomicRad" | tr ":" " " | awk '{print $1}'`
+end_atomicrad=`tail -n +$start_atomicrad "$fin3" | grep -n "&" | tail -n 1 | tr ":" " " | awk '{print $1}'`
+
+start_paulingen=`cat "$fin4" | grep -n ":: paulingEN" | tr ":" " " | awk '{print $1}'`
+end_paulingen=`tail -n +$start_paulingen "$fin4" | grep -n "]" | head -n 1 | tr ":" " " | awk '{print $1}'`
+
+let "end_en+=start_en-1"
+let "start_en++"
+let "end_r0+=start_r0-1"
+let "start_r0++"
+let "end_cnfak+=start_cnfak-1"
+let "start_cnfak++"
+let "end_p=start_p+1"
+
+let "end_covrad+=start_covrad-1"
+let "start_covrad++"
+let "end_atomicrad+=start_atomicrad-1"
+let "start_atomicrad++"
+let "end_paulingen+=start_paulingen-1"
+let "start_paulingen++"
+
+echo "Extracting electronegativities from $fin, lines $start_en:$end_en"
+cat "$fin" | sed -e "s/_wp/ /g" -e "s/,//g" -e "s/&//g" | awk -v start=$start_en -v end=$end_en \
+'{
+   if(NR>=start && NR<=end) {
+      for(i=1;i<=NF;++i) {
+         printf("%24.16f\n",$i)
+      }
+   }
+ }' >rawparams_en.txt
+ 
+echo "Extracting r0 from $fin, lines $start_r0:$end_r0"
+cat "$fin" | sed -e "s/_wp/ /g" -e "s/,//g" -e "s/&//g" | awk -v start=$start_r0 -v end=$end_r0 \
+'{
+   if(NR>=start && NR<=end) {
+      for(i=1;i<=NF;++i) {
+         printf("%24.16f\n",$i)
+      }
+   }
+ }' >rawparams_r0.txt
+ 
+echo "Extracting cnfak from $fin, lines $start_r0:$end_cnfak"
+cat "$fin" | sed -e "s/_wp/ /g" -e "s/,//g" -e "s/&//g" | awk -v start=$start_cnfak -v end=$end_cnfak \
+'{
+   if(NR>=start && NR<=end) {
+      for(i=1;i<=NF;++i) {
+         printf("%24.16f\n",$i)
+      }
+   }
+ }' >rawparams_cnfak.txt
+
+
+paste rawparams_en.txt rawparams_r0.txt rawparams_cnfak.txt >rawparams_en_r0_cnfak.txt
+
+# Ensure the columns are the same length (== same number of parameters)
+if [ `cat rawparams_en_r0_cnfak.txt | awk '{print NF}' | sort -g | uniq`"x" != "3x" ]; then
+  echo "Something went wrong. The number of params for 'en', 'r0' and 'cnfak' is not identical. Aborting!" >&2
+  exit 1
+fi
+
+nparams=`cat rawparams_en_r0_cnfak.txt | wc -l`
+
+echo "Extracting p from lines $start_p:$end_p"
+cat "$fin" | sed -e "s/data p//" -e "s%/%%" -e "s/_wp/ /g" -e "s/,//g" -e "s/&//g" | awk -v start=$start_p -v end=$end_p \
+'{
+   if(NR>=start && NR<=end) {
+      for(i=1;i<=NF;++i) {
+         printf("%24.16f\n",$i)
+      }
+   }
+ }' >rawparams_p.txt
+
+echo "Extracting covalent radii from $fin2, lines $start_covrad:$end_covrad (restricting extraction to first $nparams species)."
+
+cat "$fin2" | sed -e "s/_wp/ /g" -e "s/,//g" -e "s/&//g" -e "s/!.*//" | awk -v convfac=$convfac -v scale=$scale -v start=$start_covrad -v end=$end_covrad \
+'{
+   if(NR>=start && NR<=end) {
+      for(i=1;i<=NF;++i) {
+         printf ("%24.16f\n",$i / convfac/scale)
+      }
+   }
+ }' | head -n $nparams >rawparams_covrad.txt
+
+echo "Extracting atomic radii from $fin3, lines $start_atomicrad:$end_atomicrad (restricting extraction to first $nparams species)."
+
+cat "$fin3" | sed -e "s/_wp/ /g"  -e "s/,//g" -e "s/&//g" -e "s/!.*//"  | awk -v convfac=$convfac -v start=$start_atomicrad -v end=$end_atomicrad \
+'{
+   if(NR>=start && NR<=end) {
+      for(i=1;i<=NF;++i) {
+         printf ("%24.16f\n",$i / convfac)
+      }
+   }
+ }' | head -n $nparams >rawparams_atomicrad.txt
+
+echo "Extracting Pauling electronegativity from $fin4, lines $start_paulingen:$end_paulingen (restricting extraction to first $nparams species)."
+
+cat "$fin4" | sed -e "s/_wp/ /g"  -e "s/,//g" -e "s/&//g" -e "s/!.*//"  | awk -v start=$start_paulingen -v end=$end_paulingen \
+'{
+   if(NR>=start && NR<=end) {
+      for(i=1;i<=NF;++i) {
+         printf("%24.16f\n",$i)
+      }
+   }
+ }' | head -n $nparams >rawparams_paulingen.txt
+
+paste rawparams_en_r0_cnfak.txt rawparams_covrad.txt rawparams_atomicrad.txt rawparams_paulingen.txt >rawparams_en_r0_cnfak_covrad.txt
+
+outf="param_gfn_common.txt"
+
+echo "\$globpar" >$outf
+cat rawparams_p.txt | awk '
+BEGIN{
+  i=1;
+  j=1;
+}
+{
+  printf("p%i%i %24.16f\n",i,j,$1);
+  i++;
+  if(i>4) {
+    i=1;
+    j++;
+  }
+}' >>$outf
+echo "\$end" >>$outf
+
+cat rawparams_en_r0_cnfak_covrad.txt | awk -v date="$(date)" '{
+  printf("$Z=%2i %s\n",NR,date);
+  printf(" ELECNEG=  %24.16f\n",$1);
+  printf(" R0=       %24.16f\n",$2);
+  printf(" CNFACTOR= %24.16f\n",$3);
+  printf(" COVRAD=   %24.16f\n",$4);
+  printf(" ATOMICRAD=%24.16f\n",$5);
+  printf(" PAULINGEN=%24.16f\n",$6);
+  printf("$end\n");
+}' >> $outf
+
+ rm -f rawparams*.txt
