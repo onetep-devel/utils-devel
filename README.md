@@ -216,6 +216,14 @@ Download this straight into the `utils` directory of your ONETEP installation.
 
 ## Other
 
+- ### `DDEC_atomic_densities`: Reference ion densities for DDEC3 (density derived electrostatic and chemical) charge analysis.
+
+  `.coreconf` and `.refconf` files by Thomas Manz and Nidia Gabaldon Limas.
+
+- ### `vdW_params`: Van der Waals parameters and a program for their determination for ONETEP's vdwcorrection module.
+
+  Fortran source and data files by Quintin Hill.
+
 - ### `prep_optados_eels`: Creates the files necessary to execute optados after a conduction run.
 
   Bash script by Nicholas Hine.
