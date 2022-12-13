@@ -216,6 +216,10 @@ Download this straight into the `utils` directory of your ONETEP installation.
 
 ## Other
 
+- ### `JTH_v1.0_PAW_datasets`: PAW dataset library produced by the developers of ABINIT, converted to a format suitable for ONETEP.
+
+  `.tar.gz` archives containing `.abinit` and `.atompaw` files.
+
 - ### `DDEC_atomic_densities`: Reference ion densities for DDEC3 (density derived electrostatic and chemical) charge analysis.
 
   `.coreconf` and `.refconf` files by Thomas Manz and Nidia Gabaldon Limas.
