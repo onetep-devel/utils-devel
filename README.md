@@ -220,6 +220,10 @@ Download this straight into the `utils` directory of your ONETEP installation.
 
   `.tar.gz` archives containing `.abinit` and `.atompaw` files.
 
+- ### `opium_recpots`: A set of pseudopotentials for the most common elements, packaged by Keith Refson.
+
+  `.tar.gz` archives containing `.recpot` files.
+
 - ### `DDEC_atomic_densities`: Reference ion densities for DDEC3 (density derived electrostatic and chemical) charge analysis.
 
   `.coreconf` and `.refconf` files by Thomas Manz and Nidia Gabaldon Limas.
