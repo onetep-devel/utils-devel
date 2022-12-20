@@ -224,6 +224,10 @@ Download this straight into the `utils` directory of your ONETEP installation.
 
   `.tar.gz` archives containing `.recpot` files.
 
+- ### `devel_doc`: Notes and documentation snippets relevant to developers, but not to users of ONETEP.
+
+  `.txt` files with notes and documentation.
+
 - ### `DDEC_atomic_densities`: Reference ion densities for DDEC3 (density derived electrostatic and chemical) charge analysis.
 
   `.coreconf` and `.refconf` files by Thomas Manz and Nidia Gabaldon Limas.

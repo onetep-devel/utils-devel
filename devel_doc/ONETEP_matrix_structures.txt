@@ -1,0 +1,63 @@
+Matrix Structure Codes
+
+Alphabetical suffixes indicate which NGWF set is being used (eg 'j' is the joint set, 'a' is the auxiliary set, 'c' is the conduction set). If no alphabetical suffix is present, the valence set is implied.
+
+If a calculation has more than one subregion (in an embedding calculation, for example), numerical suffixes indicate the block of the matrix being considered. If no numerical suffix is present, there is only one region, and therefore no need to consider sub-blocks of matrices.
+
+S: The overlap matrix. If one is not using augmentation (PAW or USPs) then this is just the direct sphere-sphere overlap. If augmentation is present, it also includes the union of the sphere-sphere overlaps (S) and the augmentation-sphere terms (QR)
+
+O: The bare unaugmented NGWF overlap matrix.
+
+K: The density kernel
+
+H: The Hamiltonian.
+
+D: Block-diagonal matrix, dimensions same as number of NGWFs
+
+E: Block-diagonal matrix, dimensions same as number of projectors.
+
+G: Block-diagonal matrix, dimensions same as number of Hubbard projectors.
+
+Q: Projector-NGWF overlap matrix
+
+R: NGWF-Projector overlap matrix
+
+U: Valence NGWF - Other NGWF (eg cond, joint) overlap matrix
+
+T: Other NGWF (eg cond, joint) - val NGWF overlap matrix
+
+B: Core WFN - NGWF overlap matrix
+
+C: NGWF - Core WFN overlap matrix
+
+V: Hubbard Projector - NGWF overlap matrix
+
+W: NGWF - Hubbard Projector overlap matrix
+
+X: Projector - Hubbard Projector overlap matrix
+
+Y: Hubbard Projector - Projector overlap matrix
+
+HFx: Exchange matrix X
+
+Ss: SW-SW overlap matrix for HFx (overlap metric)
+
+Vs: SW-SW overlap matrix for HFx (potential metric)
+
+L$: Spherical Wave - Spherical Wave overlap matrix
+
+P%: Spherical Wave - NGWF overlap matrix
+
+P$: NGWF - Spherical Wave overlap matrix
+
+Pr%: Spherical Wave  Projector overlap matrix
+
+Pr$: Projector - Spherical Wave overlap matrix
+
+TDRA: Special structure for LR-TDDFT response kernel
+
+TDRAt: Transpose of the above
+
+TDOA: Special structure for LR-TDDFT kernel overlaps
+
+TDOAt: Transpose of the above
