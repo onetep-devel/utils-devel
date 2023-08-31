@@ -240,6 +240,10 @@ Download this straight into the `utils` directory of your ONETEP installation.
 
   Bash script by Nicholas Hine.
 
+- ### 'ver': Shows details about ONETEP version.
+
+  Bash script by Jacek Dziedzic.
+
 - ### `unitconv`: Converts units.
 
   Bash/awk script by Jacek Dziedzic. Helps with unit conversion. Examples of use:

@@ -1,0 +1,29 @@
+#!/bin/bash
+
+# v1.4
+# 2020.03 (C) Jacek Dziedzic, jack.erede@gmail.com
+
+curdir=`pwd`
+result=1
+counter=0
+while [ $result -eq 1 ]; do
+  stat src/onetep.F90 >/dev/null 2>/dev/null
+  result=$?
+  if [ $result -ne 0 ]; then
+    cd ..
+    let "counter++"
+  fi
+  if [ $counter -ge 10 ]; then
+    echo "Cannot find src/onetep.F90. Are you sure you are in the ONETEP source tree? Aborting!" >&2
+    cd $curdir
+    exit 1
+  fi
+done
+
+cat src/onetep.F90 2>/dev/null | grep "  Version" | getcol -2
+echo -n DL_MG
+cat dl_mg/src/dl_mg_info.F90 | grep version_string | head -n 1 | sed "s/.*=//" | tr \" " "
+echo `git status | grep "On branch" | sed "s/.* //"` `git log | grep commit | head -n 1 | cut -c 8-15`
+git log --decorate=full --color=always | head -n 1 | sed -r "s/.*\(//" | tr ")" " "
+
+cd $curdir
