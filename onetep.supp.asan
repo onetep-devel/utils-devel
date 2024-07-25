@@ -1,0 +1,6 @@
+# for functions outside of compiled code (libs):
+interceptor_via_fun:function_name_here
+interceptor_via_lib:lib_name_here
+
+# for functions in out code, see
+# https://clang.llvm.org/docs/AddressSanitizer.html#issue-suppression
