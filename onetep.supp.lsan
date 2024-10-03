@@ -1,0 +1,14 @@
+# MPICH leaks
+leak:hwloc__add_info
+leak:ofi_mem_init
+leak:*unknown*
+leak:PIDI_POSIX_mpi_release_gather_comm_init
+leak:MPII_Treeutil_tree_kary_init
+leak:MPIR_Csel_prune
+leak:MPIR_Find_external
+leak:MPIR_Find_local
+leak:tree_add_child
+leak:blacs_gridmap_
+
+# libfabric leaks
+leak:ofi_mem_init

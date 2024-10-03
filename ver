@@ -1,7 +1,7 @@
 #!/bin/bash
 
-# v1.4
-# 2020.03 (C) Jacek Dziedzic, jack.erede@gmail.com
+# v1.5
+# 2020.03 Jacek Dziedzic, jd12g09@soton.ac.uk
 
 curdir=`pwd`
 result=1
@@ -20,7 +20,7 @@ while [ $result -eq 1 ]; do
   fi
 done
 
-cat src/onetep.F90 2>/dev/null | grep "  Version" | getcol -2
+cat src/onetep.F90 2>/dev/null | grep "  Version" | awk '{print $4}'
 echo -n DL_MG
 cat dl_mg/src/dl_mg_info.F90 | grep version_string | head -n 1 | sed "s/.*=//" | tr \" " "
 echo `git status | grep "On branch" | sed "s/.* //"` `git log | grep commit | head -n 1 | cut -c 8-15`
