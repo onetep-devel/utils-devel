@@ -25,8 +25,10 @@ s8          2.70000
 s9          5.00000
 aesdmp3     3.00000
 aesdmp5     4.00000
+rexp        1.00000
 kexp        1.50000
 kexplight   1.00000
+renscale    0.00000
 $end
 $pairpar
 $end
