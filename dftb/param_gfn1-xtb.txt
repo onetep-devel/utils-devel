@@ -19,8 +19,10 @@ a1          0.63000
 a2          5.00000
 s8          2.40000
 s9          0.00000
+rexp        1.00000
 kexp        1.50000
 kexplight   1.50000
+renscale    0.00000
 xbdamp      0.44000
 xbrad       1.30000
 $end
