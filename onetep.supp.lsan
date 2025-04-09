@@ -12,3 +12,23 @@ leak:blacs_gridmap_
 
 # libfabric leaks
 leak:ofi_mem_init
+
+# openmpi and opal leaks
+leak:ompi_comm_init
+leak:ompi_group_allocate
+leak:ompi_group_allocate_plist_w_procs
+leak:ompi_op_base_op_select
+leak:opal_argv_append_nosize
+leak:opal_free_list_grow_st
+
+
+leak:__vasprintf_internal
+leak:libgfortran.so
+leak:libasan.so
+leak:libblas.so
+leak:libfftw3_omp.so
+leak:libfftw3.so
+leak:liblapack.so
+leak:libmpi_usempif08.so
+leak:libmpi_usempi_ignore_tkr.so
+leak:libscalapack.so
